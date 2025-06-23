@@ -1,0 +1,6 @@
+
+{
+  "name": "Orienteering Course Designer",
+  "description": "A client-side web application for designing orienteering courses on PDF maps, inspired by Purple Pen. Supports drawing standard IOF symbols, managing control descriptions, and saving/loading course designs.",
+  "requestFramePermissions": []
+}

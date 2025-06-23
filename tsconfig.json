@@ -1,0 +1,37 @@
+
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "useDefineForClassFields": true,
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true, // Recommended for wider compatibility
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler", // Or "node" if "bundler" causes issues
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"] // Optional: for aliasing if you move files to src later
+    }
+  },
+  "include": [
+    "./index.tsx",
+    "./App.tsx",
+    "./types.ts",
+    "./constants.ts",
+    "./components/**/*.ts",
+    "./components/**/*.tsx",
+    "./hooks/**/*.ts",
+    "./hooks/**/*.tsx",
+    "./utils/**/*.ts",
+    "./utils/**/*.tsx"
+  ], // Ensure all your .ts and .tsx files are included
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
