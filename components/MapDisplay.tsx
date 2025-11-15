@@ -11,7 +11,8 @@ import {
   LegElement,
   AreaElement,
   AreaKind,
-  Tool
+  Tool,
+  DistancePreview
 } from '../types';
 import {
   IOF_PURPLE,
@@ -182,11 +183,12 @@ interface MapDisplayProps {
   currentTool: Tool;
   currentMouseMapPos: Point | null;
   isDragging: boolean;
-  isMeasuringRefLine: boolean; 
-  refLinePoints: Point[]; 
+  isMeasuringRefLine: boolean;
+  refLinePoints: Point[];
   startSymbolScaleUI: number;
   controlSymbolScaleUI: number;
   finishSymbolScaleUI: number;
+  distancePreview: DistancePreview | null;
 }
 
 export const MapDisplay: React.FC<MapDisplayProps> = ({
@@ -194,19 +196,25 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
   onCanvasMouseDown, onCanvasMouseMove, onCanvasMouseUp, onCanvasWheel,
   drawingPoints, currentTool, currentMouseMapPos, isDragging,
   isMeasuringRefLine, refLinePoints,
-  startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI 
+  startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI,
+  distancePreview
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const getMapCoords = useCallback((event: React.MouseEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current; if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect(); 
+    const rect = canvas.getBoundingClientRect();
     return {
       x: (event.clientX - rect.left - mapTransform.offset.x) / mapTransform.scale,
       y: (event.clientY - rect.top - mapTransform.offset.y) / mapTransform.scale,
     };
   }, [mapTransform]);
+
+  const mapToScreen = useCallback((point: Point): Point => ({
+    x: point.x * mapTransform.scale + mapTransform.offset.x,
+    y: point.y * mapTransform.scale + mapTransform.offset.y,
+  }), [mapTransform]);
 
   const handleMouseDown = (event: React.MouseEvent<HTMLCanvasElement>) => onCanvasMouseDown(getMapCoords(event), event);
   const handleMouseMove = (event: React.MouseEvent<HTMLCanvasElement>) => onCanvasMouseMove(getMapCoords(event), event);
@@ -238,9 +246,9 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
 
   const drawReferenceLine = (ctx: CanvasRenderingContext2D, points: Point[], previewPoint: Point | null) => {
     if (points.length === 0 && !previewPoint) return;
-    
+
     ctx.save();
-    ctx.strokeStyle = 'rgba(0, 255, 0, 0.9)'; 
+    ctx.strokeStyle = 'rgba(0, 255, 0, 0.9)';
     const refLineWidthOnScreen = Math.max(1, 2 / mapTransform.scale); // Kept screen-relative for distinctness
     ctx.lineWidth = refLineWidthOnScreen;
     ctx.setLineDash([5 / mapTransform.scale, 3 / mapTransform.scale]); 
@@ -265,6 +273,57 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
     });
     ctx.restore();
   };
+
+  const drawLegPreview = (ctx: CanvasRenderingContext2D, preview: DistancePreview) => {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = Math.max(0.6, 1.5 / mapTransform.scale);
+    ctx.setLineDash([6 / mapTransform.scale, 6 / mapTransform.scale]);
+
+    let startPoint = preview.start;
+    if (preview.fromElementId) {
+      const fromVisuals = getConnectableElementVisuals(
+        preview.fromElementId,
+        courseElements,
+        startSymbolScaleUI,
+        controlSymbolScaleUI,
+        finishSymbolScaleUI
+      );
+      if (fromVisuals) {
+        startPoint = getAdjustedPointAlongVector(fromVisuals.center, preview.end, fromVisuals.effectiveRadius);
+      }
+    }
+
+    ctx.beginPath();
+    ctx.moveTo(startPoint.x, startPoint.y);
+    ctx.lineTo(preview.end.x, preview.end.y);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const getDistanceLabelLines = (preview: DistancePreview): string[] => {
+    const mapUnitsValue = preview.mapUnits;
+    const mapUnitsText = mapUnitsValue >= 100 ? mapUnitsValue.toFixed(0) : mapUnitsValue.toFixed(2);
+    const lines = [`Map: ${mapUnitsText} units`];
+    if (preview.meters !== null && preview.meters !== undefined) {
+      const metersValue = preview.meters;
+      const realWorldText = metersValue >= 1000
+        ? `${(metersValue / 1000).toFixed(2)} km`
+        : `${metersValue.toFixed(metersValue >= 100 ? 0 : 1)} m`;
+      lines.push(`Real: ${realWorldText}`);
+    }
+    return lines;
+  };
+
+  const distanceLabelLines = distancePreview ? getDistanceLabelLines(distancePreview) : null;
+  const distanceLabelPosition = distancePreview ? (() => {
+    const startScreen = mapToScreen(distancePreview.start);
+    const endScreen = mapToScreen(distancePreview.end);
+    return {
+      x: (startScreen.x + endScreen.x) / 2,
+      y: (startScreen.y + endScreen.y) / 2,
+    };
+  })() : null;
 
   useEffect(() => {
     const canvas = canvasRef.current; const container = containerRef.current;
@@ -297,12 +356,17 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
         drawReferenceLine(ctx, refLinePoints, currentMouseMapPos);
     }
 
+    if (distancePreview && distancePreview.kind === 'leg') {
+        drawLegPreview(ctx, distancePreview);
+    }
+
     ctx.restore();
   }, [
-      mapMediaToRender, mapTransform, courseElements, selectedElementId, 
-      drawingPoints, currentTool, currentMouseMapPos, 
+      mapMediaToRender, mapTransform, courseElements, selectedElementId,
+      drawingPoints, currentTool, currentMouseMapPos,
       isMeasuringRefLine, refLinePoints,
-      startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI 
+      startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI,
+      distancePreview
     ]);
 
   return (
@@ -311,11 +375,27 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
         ref={canvasRef}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp} 
-        className="absolute top-0 left-0" 
-        style={{ cursor: isMeasuringRefLine ? 'crosshair' : (currentTool === Tool.PAN ? (isDragging ? 'grabbing' : 'grab') : (currentTool === Tool.SELECT ? 'default' : 'crosshair')) }}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      className="absolute top-0 left-0"
+      style={{ cursor: isMeasuringRefLine ? 'crosshair' : (currentTool === Tool.PAN ? (isDragging ? 'grabbing' : 'grab') : (currentTool === Tool.SELECT ? 'default' : 'crosshair')) }}
       />
+      {distanceLabelLines && distanceLabelPosition && (
+        <div
+          className="pointer-events-none absolute"
+          style={{
+            left: `${distanceLabelPosition.x}px`,
+            top: `${distanceLabelPosition.y}px`,
+            transform: 'translate(-50%, -120%)',
+          }}
+        >
+          <div className="bg-black/70 text-white px-2 py-1 rounded text-xs sm:text-sm whitespace-nowrap text-center leading-tight shadow-md border border-white/10">
+            {distanceLabelLines.map((line, index) => (
+              <div key={index}>{line}</div>
+            ))}
+          </div>
+        </div>
+      )}
       {!mapMediaToRender && (
         <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xl pointer-events-none">
           Upload a map to begin.
