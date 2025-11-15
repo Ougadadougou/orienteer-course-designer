@@ -7,8 +7,9 @@ import {
 } from './types';
 import { useHistory } from './hooks/useHistory';
 import { Toolbar } from './components/Toolbar';
-import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay'; 
+import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay';
 import { ControlDescriptionPanel } from './components/ControlDescriptionPanel';
+import { ResizableSplit } from './components/ResizableSplit';
 import { ScaleSettings } from './components/ScaleSettings';
 import { SymbolSettings } from './components/SymbolSettings';
 import {
@@ -33,6 +34,14 @@ const initialAppState: AppState = {
   elements: [],
   selectedElementId: null,
 };
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+const DEFAULT_SPLIT_RATIO = 0.7;
+const MIN_SPLIT_RATIO = 0.2;
+const MAX_SPLIT_RATIO = 0.85;
+const SPLIT_RATIO_STORAGE_KEY = 'orienteer:map-description-split-ratio';
+const NARROW_SCREEN_BREAKPOINT = 1024;
 
 // This function needs to calculate current size based on scale to determine target center
 const getRotationAngleForStart = (startElement: StartElement, allElements: CourseElement[], startSymbolScaleUI: number): number => {
@@ -106,6 +115,39 @@ const App: React.FC = () => {
   const [refLinePoints, setRefLinePoints] = useState<Point[]>([]);
 
   const mapDisplayWrapperRef = useRef<HTMLDivElement>(null);
+
+  const [splitRatio, setSplitRatio] = useState<number>(() => {
+    if (typeof window === 'undefined') return DEFAULT_SPLIT_RATIO;
+    const stored = window.localStorage.getItem(SPLIT_RATIO_STORAGE_KEY);
+    if (!stored) return DEFAULT_SPLIT_RATIO;
+    const parsed = parseFloat(stored);
+    return Number.isFinite(parsed) ? clamp(parsed, MIN_SPLIT_RATIO, MAX_SPLIT_RATIO) : DEFAULT_SPLIT_RATIO;
+  });
+
+  const handleSplitRatioChange = useCallback((ratio: number) => {
+    const clampedRatio = clamp(ratio, MIN_SPLIT_RATIO, MAX_SPLIT_RATIO);
+    setSplitRatio(clampedRatio);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SPLIT_RATIO_STORAGE_KEY, clampedRatio.toString());
+    }
+  }, []);
+
+  const [isNarrowScreen, setIsNarrowScreen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth < NARROW_SCREEN_BREAKPOINT;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      setIsNarrowScreen(window.innerWidth < NARROW_SCREEN_BREAKPOINT);
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isDescriptionPanelVisible = !isNarrowScreen;
 
   // Global Symbol Scale UI states (1-10, default 5)
   const [startSymbolScaleUI, setStartSymbolScaleUI] = useState<number>(5);
@@ -752,34 +794,49 @@ const App: React.FC = () => {
         onExportPdf={handleExportPdf} isMapLoaded={!!processedMapForDisplay}
       />
 
-      <div ref={mapDisplayWrapperRef} className="flex flex-1 overflow-hidden print:overflow-visible">
-        <MapDisplay
-          mapMediaToRender={processedMapForDisplay}
-          mapTransform={mapTransform}
-          courseElements={courseState.elements}
-          selectedElementId={courseState.selectedElementId}
-          onCanvasMouseDown={handleCanvasMouseDown}
-          onCanvasMouseMove={handleCanvasMouseMove}
-          onCanvasMouseUp={handleCanvasMouseUp}
-          onCanvasWheel={handleCanvasWheel}
-          drawingPoints={drawingAreaPoints}
-          currentTool={currentTool}
-          currentMouseMapPos={currentMapMouseForPreview} 
-          isDragging={isDragging}
-          isMeasuringRefLine={isMeasuringRefLine} 
-          refLinePoints={refLinePoints} 
-          startSymbolScaleUI={startSymbolScaleUI} // Pass UI scales
-          controlSymbolScaleUI={controlSymbolScaleUI}
-          finishSymbolScaleUI={finishSymbolScaleUI}
-        />
-        <ControlDescriptionPanel
-          selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
-          allCourseElements={courseState.elements}
-          onUpdateDescription={handleUpdateDescription}
-          onExportDescriptions={handleExportDescriptions}
-          // onUpdateControlRadius removed
-        />
-      </div>
+      <ResizableSplit
+        className="flex-1 overflow-hidden print:overflow-visible"
+        left={
+          <div ref={mapDisplayWrapperRef} className="flex h-full w-full min-w-0 overflow-hidden print:overflow-visible">
+            <MapDisplay
+              mapMediaToRender={processedMapForDisplay}
+              mapTransform={mapTransform}
+              courseElements={courseState.elements}
+              selectedElementId={courseState.selectedElementId}
+              onCanvasMouseDown={handleCanvasMouseDown}
+              onCanvasMouseMove={handleCanvasMouseMove}
+              onCanvasMouseUp={handleCanvasMouseUp}
+              onCanvasWheel={handleCanvasWheel}
+              drawingPoints={drawingAreaPoints}
+              currentTool={currentTool}
+              currentMouseMapPos={currentMapMouseForPreview}
+              isDragging={isDragging}
+              isMeasuringRefLine={isMeasuringRefLine}
+              refLinePoints={refLinePoints}
+              startSymbolScaleUI={startSymbolScaleUI} // Pass UI scales
+              controlSymbolScaleUI={controlSymbolScaleUI}
+              finishSymbolScaleUI={finishSymbolScaleUI}
+            />
+          </div>
+        }
+        right={
+          isDescriptionPanelVisible ? (
+            <ControlDescriptionPanel
+              selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
+              allCourseElements={courseState.elements}
+              onUpdateDescription={handleUpdateDescription}
+              onExportDescriptions={handleExportDescriptions}
+              // onUpdateControlRadius removed
+            />
+          ) : null
+        }
+        splitRatio={splitRatio}
+        onSplitRatioChange={handleSplitRatioChange}
+        isRightPaneVisible={isDescriptionPanelVisible}
+        minLeftWidth={360}
+        minRightWidth={384}
+        dividerWidth={8}
+      />
       <div className="p-1 bg-black text-xs text-center text-gray-400 print:hidden flex flex-wrap justify-center items-center gap-x-2">
         <span>Tool: <span className="text-teal-300">{currentTool}</span></span>
         <span>| Zoom: <span className="text-gray-200">{'' + (Math.round(mapTransform.scale * 100) / 100)}x</span></span>
