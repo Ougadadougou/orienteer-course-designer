@@ -87,6 +87,12 @@ export interface AreaElement extends CourseElementBase {
   type: ElementType.AREA;
   points: Point[];
   kind: AreaKind;
+  /**
+   * Multiplier applied to the base time-per-meter when performing route analysis.
+   * Values < 1 speed the athlete up, values > 1 slow them down. Undefined means
+   * fall back to the contextual defaults (e.g. corridor slider).
+   */
+  speedMultiplier?: number;
 }
 
 export type CourseElement = StartElement | ControlElement | FinishElement | LegElement | AreaElement;
@@ -99,10 +105,11 @@ export interface MapTransform {
 export interface CourseData {
   elements: CourseElement[];
   mapFileName?: string; // Optional: to remind user which map was used
-  // Potentially store UI scale settings in the future if desired
-  // startSymbolScaleUI?: number;
-  // controlSymbolScaleUI?: number;
-  // finishSymbolScaleUI?: number;
+  mapScaleSettings?: MapScaleSettings;
+  startSymbolScaleUI?: number;
+  controlSymbolScaleUI?: number;
+  finishSymbolScaleUI?: number;
+  savedAt?: number;
 }
 
 // PDF.js types (simplified, actual types are more complex)

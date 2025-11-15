@@ -27,8 +27,9 @@ export const ZOOM_SENSITIVITY = 0.001;
 
 export const TEMP_AREA_POINT_RADIUS = 3; 
 export const TEMP_AREA_LINE_COLOR = 'rgba(0, 123, 255, 0.7)';
-export const AREA_CORRIDOR_FILL = 'rgba(255, 255, 255, 0.7)'; 
+export const AREA_CORRIDOR_FILL = 'rgba(255, 255, 255, 0.7)';
 export const AREA_STROKE_COLOR = 'rgba(51, 51, 51, 0.7)';
+export const DEFAULT_CORRIDOR_SPEED_MULTIPLIER = 0.75;
 
 export const LEG_CONNECTION_GAP = 4; // Gap in map units.
 

@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Tool, Point, MapTransform, CourseElement, ElementType, StartElement, ControlElement, FinishElement, LegElement, AreaElement,
   PDFDocumentProxy, PDFPageProxy, CourseData, ControlDescriptionData, getDefaultControlDescription, AreaKind,
@@ -9,6 +9,7 @@ import { useHistory } from './hooks/useHistory';
 import { Toolbar } from './components/Toolbar';
 import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay'; 
 import { ControlDescriptionPanel } from './components/ControlDescriptionPanel';
+import { RouteAnalysisPanel } from './components/RouteAnalysisPanel';
 import { ScaleSettings } from './components/ScaleSettings';
 import { SymbolSettings } from './components/SymbolSettings';
 import {
@@ -18,10 +19,80 @@ import {
   BASE_CONTROL_RADIUS_MAP_UNITS, // Used for click detection calculation
   BASE_START_SIZE_MAP_UNITS,    // Used for click detection calculation
   BASE_FINISH_OUTER_RADIUS_MAP_UNITS, // Used for click detection calculation
+  DEFAULT_CORRIDOR_SPEED_MULTIPLIER,
 } from './constants';
 import { getElementAtPoint, isPointInCircle, isPointInStartTriangle, distance as geomDistance } from './utils/geometry';
 
 const generateId = () => `el_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+const LOCAL_STORAGE_KEY = 'orienteering-course-designer-autosave-v1';
+
+const sanitizeLoadedCourseElements = (
+  loadedElements: CourseElement[],
+  startSymbolScaleUI: number,
+): CourseElement[] => {
+  const sanitized = loadedElements.map(el => {
+    const { size, radius, outerRadius, innerRadius, ...rest } = el as any;
+    const sanitizedElement = { ...rest } as CourseElement;
+
+    if (sanitizedElement.type === ElementType.CONTROL) {
+      const control = sanitizedElement as ControlElement;
+      if (!control.description) {
+        control.description = getDefaultControlDescription(control.number);
+      }
+    }
+
+    if (sanitizedElement.type === ElementType.START) {
+      const start = sanitizedElement as StartElement;
+      if (typeof start.rotationAngle !== 'number') {
+        start.rotationAngle = 0;
+      }
+    }
+
+    if (sanitizedElement.type === ElementType.AREA) {
+      const area = sanitizedElement as AreaElement;
+      if (area.kind === AreaKind.CORRIDOR && typeof area.speedMultiplier !== 'number') {
+        area.speedMultiplier = DEFAULT_CORRIDOR_SPEED_MULTIPLIER;
+      }
+    }
+
+    return sanitizedElement;
+  });
+
+  return sanitized.map(el =>
+    el.type === ElementType.START
+      ? {
+          ...el,
+          rotationAngle: getRotationAngleForStart(el as StartElement, sanitized, startSymbolScaleUI),
+        }
+      : el,
+  );
+};
+
+const formatAutosaveTime = (timestamp: number | null): string => {
+  if (!timestamp) return 'Idle';
+  try {
+    return new Date(timestamp).toLocaleTimeString();
+  } catch (error) {
+    console.error('Failed to format autosave time', error);
+    return 'Unknown';
+  }
+};
+
+const computeMapUnitsPerMeter = (settings: MapScaleSettings): number | null => {
+  if (settings.mode === 'ratio' && settings.ratioValue && settings.ratioValue > 0) {
+    return POINTS_PER_METER_AT_1_TO_1_SCALE / settings.ratioValue;
+  }
+  if (
+    settings.mode === 'referenceLength' &&
+    settings.mapUnitsOnScreen &&
+    settings.mapUnitsOnScreen > 0 &&
+    settings.realWorldMeters &&
+    settings.realWorldMeters > 0
+  ) {
+    return settings.mapUnitsOnScreen / settings.realWorldMeters;
+  }
+  return null;
+};
 
 interface AppState {
   elements: CourseElement[];
@@ -101,6 +172,7 @@ const App: React.FC = () => {
   
   const [mapScaleSettings, setMapScaleSettings] = useState<MapScaleSettings>({ mode: 'none' });
   const [courseLengthMeters, setCourseLengthMeters] = useState<number | null>(null);
+  const mapUnitsPerMeter = useMemo(() => computeMapUnitsPerMeter(mapScaleSettings), [mapScaleSettings]);
 
   const [isMeasuringRefLine, setIsMeasuringRefLine] = useState(false);
   const [refLinePoints, setRefLinePoints] = useState<Point[]>([]);
@@ -111,6 +183,10 @@ const App: React.FC = () => {
   const [startSymbolScaleUI, setStartSymbolScaleUI] = useState<number>(5);
   const [controlSymbolScaleUI, setControlSymbolScaleUI] = useState<number>(5);
   const [finishSymbolScaleUI, setFinishSymbolScaleUI] = useState<number>(5);
+  const [lastAutosaveTimestamp, setLastAutosaveTimestamp] = useState<number | null>(null);
+  const autosaveSkipNextRef = useRef(false);
+  const startSymbolScaleUIRef = useRef(startSymbolScaleUI);
+  const hasRestoredAutosaveRef = useRef(false);
 
   const handleSetStartSymbolScaleUI = (scale: number) => {
     if (scale >= 1 && scale <= 10) setStartSymbolScaleUI(scale);
@@ -122,11 +198,63 @@ const App: React.FC = () => {
     if (scale >= 1 && scale <= 10) setFinishSymbolScaleUI(scale);
   };
 
+  useEffect(() => {
+    startSymbolScaleUIRef.current = startSymbolScaleUI;
+  }, [startSymbolScaleUI]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (hasRestoredAutosaveRef.current) return;
+    hasRestoredAutosaveRef.current = true;
+
+    try {
+      const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (!stored) return;
+      const parsed = JSON.parse(stored) as CourseData;
+      if (!parsed || !Array.isArray(parsed.elements) || parsed.elements.length === 0) return;
+
+      const shouldRestore = window.confirm('An autosaved course was found from your previous session. Restore it? You will need to re-upload the associated map file.');
+      if (!shouldRestore) return;
+
+      const sanitizedElements = sanitizeLoadedCourseElements(parsed.elements, startSymbolScaleUIRef.current);
+      resetHistory({ elements: sanitizedElements, selectedElementId: null, mapFileName: parsed.mapFileName });
+      setMapScaleSettings(parsed.mapScaleSettings ?? { mode: 'none' });
+      setDrawingAreaPoints([]);
+      setLegStartElementId(null);
+      setIsMeasuringRefLine(false);
+      setRefLinePoints([]);
+      setCurrentMapMouseForPreview(null);
+      setCourseLengthMeters(null);
+      setMapTransform({ scale: DEFAULT_MAP_SCALE, offset: DEFAULT_MAP_OFFSET });
+
+      if (typeof parsed.startSymbolScaleUI === 'number') setStartSymbolScaleUI(parsed.startSymbolScaleUI);
+      if (typeof parsed.controlSymbolScaleUI === 'number') setControlSymbolScaleUI(parsed.controlSymbolScaleUI);
+      if (typeof parsed.finishSymbolScaleUI === 'number') setFinishSymbolScaleUI(parsed.finishSymbolScaleUI);
+
+      const savedAt = parsed.savedAt ?? Date.now();
+      setLastAutosaveTimestamp(savedAt);
+      autosaveSkipNextRef.current = true;
+
+      if (parsed.mapFileName) {
+        alert(`Autosaved course restored. Please re-upload the map file: ${parsed.mapFileName}`);
+      } else {
+        alert('Autosaved course restored. Please re-upload the original map file.');
+      }
+    } catch (error) {
+      console.error('Failed to restore autosaved course', error);
+      try {
+        window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+      } catch (removeError) {
+        console.error('Failed to remove corrupt autosave data', removeError);
+      }
+    }
+  }, [resetHistory]);
+
   const resetCourse = useCallback(() => {
     resetHistory(initialAppState);
     setDrawingAreaPoints([]);
-    setLegStartElementId(null); 
-    setMapScaleSettings({ mode: 'none' }); 
+    setLegStartElementId(null);
+    setMapScaleSettings({ mode: 'none' });
     setCourseLengthMeters(null);
     setIsMeasuringRefLine(false);
     setRefLinePoints([]);
@@ -134,6 +262,15 @@ const App: React.FC = () => {
     setStartSymbolScaleUI(5);
     setControlSymbolScaleUI(5);
     setFinishSymbolScaleUI(5);
+    setLastAutosaveTimestamp(null);
+    autosaveSkipNextRef.current = true;
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+      } catch (error) {
+        console.error('Failed to clear autosave storage during reset', error);
+      }
+    }
   }, [resetHistory]);
 
   const fitMapToView = useCallback(() => {
@@ -185,6 +322,38 @@ const App: React.FC = () => {
       setMapTransform({ scale: DEFAULT_MAP_SCALE, offset: DEFAULT_MAP_OFFSET });
     }
   }, [processedMapForDisplay, mapNaturalDimensions, fitMapToView]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (autosaveSkipNextRef.current) {
+      autosaveSkipNextRef.current = false;
+      return;
+    }
+
+    try {
+      const shouldPersist = courseState.elements.length > 0 || !!courseState.mapFileName || mapScaleSettings.mode !== 'none';
+      if (!shouldPersist) {
+        window.localStorage.removeItem(LOCAL_STORAGE_KEY);
+        setLastAutosaveTimestamp(null);
+        return;
+      }
+
+      const savedAt = Date.now();
+      const dataToPersist: CourseData = {
+        elements: courseState.elements,
+        mapFileName: courseState.mapFileName,
+        mapScaleSettings,
+        startSymbolScaleUI,
+        controlSymbolScaleUI,
+        finishSymbolScaleUI,
+        savedAt,
+      };
+      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(dataToPersist));
+      setLastAutosaveTimestamp(savedAt);
+    } catch (error) {
+      console.error('Failed to persist autosave course data', error);
+    }
+  }, [courseState.elements, courseState.mapFileName, mapScaleSettings, startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI]);
 
 
   const handleMapUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -257,12 +426,11 @@ const App: React.FC = () => {
         }
         // setMapTransform({ scale: DEFAULT_MAP_SCALE, offset: DEFAULT_MAP_OFFSET }); // Moved up
         const newMapFileName = fileName;
-        setCourseState(prev => ({
-            ...initialAppState, 
-            elements: prev.mapFileName === newMapFileName ? prev.elements : [], 
-            mapFileName: newMapFileName 
-        }), false); 
-        resetCourse(); 
+        resetCourse();
+        setCourseState(() => ({
+            ...initialAppState,
+            mapFileName: newMapFileName
+        }), false);
     } catch (error) {
         console.error("Error loading map:", error);
         alert(`Error loading map: ${error instanceof Error ? error.message : String(error)}`);
@@ -546,16 +714,21 @@ const App: React.FC = () => {
   };
   
   const handleSaveCourseData = () => {
-    const courseDataToSave: CourseData = { 
-      elements: courseState.elements, 
+    const savedAt = Date.now();
+    const courseDataToSave: CourseData = {
+      elements: courseState.elements,
       mapFileName: courseState.mapFileName,
-      // Consider saving UI scales if desired for future sessions:
-      // startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI,
+      mapScaleSettings,
+      startSymbolScaleUI,
+      controlSymbolScaleUI,
+      finishSymbolScaleUI,
+      savedAt,
     };
     const blob = new Blob([JSON.stringify(courseDataToSave, null, 2)], { type: "application/json" });
     const link = document.createElement('a'); link.href = URL.createObjectURL(blob);
     link.download = `course_${courseState.mapFileName?.replace(/\.(pdf|png|jpe?g|heic|gif|webp)$/i,'') || 'design'}.json`;
     document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(link.href);
+    setLastAutosaveTimestamp(savedAt);
   };
 
   const handleLoadCourse = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -564,36 +737,28 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
-          const loadedData = JSON.parse(e.target?.result as string) as CourseData; // Assuming CourseData might store scales
+          const loadedData = JSON.parse(e.target?.result as string) as CourseData;
           if (loadedData && Array.isArray(loadedData.elements)) {
-            const sanitizedElements = loadedData.elements.map(el => {
-              // Remove size/radius properties from loaded elements as they are no longer stored
-              const { size, radius, outerRadius, innerRadius, ...restOfElement } = el as any;
-              let sanitizedEl = restOfElement;
+            const sanitizedElements = sanitizeLoadedCourseElements(loadedData.elements, startSymbolScaleUIRef.current);
+            resetHistory({ elements: sanitizedElements, selectedElementId: null, mapFileName: loadedData.mapFileName });
+            setMapScaleSettings(loadedData.mapScaleSettings ?? { mode: 'none' });
+            setDrawingAreaPoints([]);
+            setLegStartElementId(null);
+            setIsMeasuringRefLine(false);
+            setRefLinePoints([]);
+            setCurrentMapMouseForPreview(null);
+            setCourseLengthMeters(null);
 
-              if (sanitizedEl.type === ElementType.CONTROL) {
-                if (!(sanitizedEl as ControlElement).description) {
-                  (sanitizedEl as ControlElement).description = getDefaultControlDescription((sanitizedEl as ControlElement).number);
-                }
-              }
-              if (sanitizedEl.type === ElementType.START) {
-                if (typeof (sanitizedEl as StartElement).rotationAngle === 'undefined') {
-                  (sanitizedEl as StartElement).rotationAngle = 0; 
-                }
-              }
-              return sanitizedEl as CourseElement;
-            });
+            const startScale = typeof loadedData.startSymbolScaleUI === 'number' ? loadedData.startSymbolScaleUI : 5;
+            const controlScale = typeof loadedData.controlSymbolScaleUI === 'number' ? loadedData.controlSymbolScaleUI : 5;
+            const finishScale = typeof loadedData.finishSymbolScaleUI === 'number' ? loadedData.finishSymbolScaleUI : 5;
+            setStartSymbolScaleUI(startScale);
+            setControlSymbolScaleUI(controlScale);
+            setFinishSymbolScaleUI(finishScale);
 
-            // After sanitizing individual elements, recalculate Start rotations based on all loaded elements and current startSymbolScaleUI
-            let finalLoadedElements = sanitizedElements.map(el => (el.type === ElementType.START) ? { ...el, rotationAngle: getRotationAngleForStart(el as StartElement, sanitizedElements, startSymbolScaleUI) } : el);
-            
-            resetHistory({ elements: finalLoadedElements, selectedElementId: null, mapFileName: loadedData.mapFileName });
-            
-            // Restore UI scales if they were saved in the JSON, otherwise keep current or default
-            // if (typeof (loadedData as any).startSymbolScaleUI === 'number') setStartSymbolScaleUI((loadedData as any).startSymbolScaleUI); else setStartSymbolScaleUI(5);
-            // if (typeof (loadedData as any).controlSymbolScaleUI === 'number') setControlSymbolScaleUI((loadedData as any).controlSymbolScaleUI); else setControlSymbolScaleUI(5);
-            // if (typeof (loadedData as any).finishSymbolScaleUI === 'number') setFinishSymbolScaleUI((loadedData as any).finishSymbolScaleUI); else setFinishSymbolScaleUI(5);
-
+            const savedAt = loadedData.savedAt ?? Date.now();
+            setLastAutosaveTimestamp(savedAt);
+            autosaveSkipNextRef.current = true;
 
             if (loadedData.mapFileName && !processedMapForDisplay) alert(`Course loaded. Please re-upload the map file: ${loadedData.mapFileName}`);
             else if (loadedData.mapFileName && processedMapForDisplay && courseState.mapFileName && courseState.mapFileName.toLowerCase() !== loadedData.mapFileName.toLowerCase()) alert(`Course loaded for map "${loadedData.mapFileName}". Your current map is "${courseState.mapFileName}". Results may vary.`);
@@ -601,7 +766,7 @@ const App: React.FC = () => {
           } else alert("Invalid course file format.");
         } catch (error) { console.error("Error loading course:", error); alert(`Failed to load course file: ${error instanceof Error ? error.message : "Unknown error"}`); }
       }; reader.readAsText(file);
-    } event.target.value = ''; 
+    } event.target.value = '';
   };
 
   const handleExportPdf = async () => {
@@ -638,7 +803,16 @@ const App: React.FC = () => {
       }
       if (event.key === 'Enter') {
         if ((currentTool === Tool.AREA_FORBIDDEN || currentTool === Tool.AREA_CORRIDOR) && drawingAreaPoints.length >= 3) {
-          const newArea: AreaElement = { id: generateId(), type: ElementType.AREA, points: [...drawingAreaPoints], kind: currentTool === Tool.AREA_FORBIDDEN ? AreaKind.FORBIDDEN : AreaKind.CORRIDOR };
+          const newArea: AreaElement = {
+            id: generateId(),
+            type: ElementType.AREA,
+            points: [...drawingAreaPoints],
+            kind: currentTool === Tool.AREA_FORBIDDEN ? AreaKind.FORBIDDEN : AreaKind.CORRIDOR,
+            speedMultiplier:
+              currentTool === Tool.AREA_FORBIDDEN
+                ? undefined
+                : DEFAULT_CORRIDOR_SPEED_MULTIPLIER,
+          };
           setCourseState(prev => ({...prev, elements: [...prev.elements, newArea], selectedElementId: newArea.id}));
           setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null);
         }
@@ -655,15 +829,31 @@ const App: React.FC = () => {
 
   const handleScaleSettingsUpdate = (newSettings: MapScaleSettings) => setMapScaleSettings(newSettings);
 
+  const handleUpdateAreaSpeedMultiplier = useCallback(
+    (areaId: string, multiplier: number) => {
+      setCourseState(prev => ({
+        ...prev,
+        elements: prev.elements.map(el => {
+          if (el.id === areaId && el.type === ElementType.AREA) {
+            return { ...el, speedMultiplier: multiplier } as AreaElement;
+          }
+          return el;
+        }),
+      }));
+    },
+    [setCourseState],
+  );
+
   useEffect(() => {
-    if (mapScaleSettings.mode === 'none' || !mapNaturalDimensions || courseState.elements.length === 0) { setCourseLengthMeters(null); return; }
-    let mapUnitsPerMeter: number | null = null;
-    if (mapScaleSettings.mode === 'ratio' && mapScaleSettings.ratioValue && mapScaleSettings.ratioValue > 0) {
-      mapUnitsPerMeter = POINTS_PER_METER_AT_1_TO_1_SCALE / mapScaleSettings.ratioValue;
-    } else if (mapScaleSettings.mode === 'referenceLength' && mapScaleSettings.mapUnitsOnScreen && mapScaleSettings.mapUnitsOnScreen > 0 && mapScaleSettings.realWorldMeters && mapScaleSettings.realWorldMeters > 0) {
-      mapUnitsPerMeter = mapScaleSettings.mapUnitsOnScreen / mapScaleSettings.realWorldMeters;
+    if (mapScaleSettings.mode === 'none' || !mapNaturalDimensions || courseState.elements.length === 0) {
+      setCourseLengthMeters(null);
+      return;
     }
-    if (!mapUnitsPerMeter || mapUnitsPerMeter <= 0) { setCourseLengthMeters(null); return; }
+
+    if (!mapUnitsPerMeter || mapUnitsPerMeter <= 0) {
+      setCourseLengthMeters(null);
+      return;
+    }
     let totalLengthMapUnits = 0;
     courseState.elements.forEach(el => {
       if (el.type === ElementType.LEG) {
@@ -676,7 +866,22 @@ const App: React.FC = () => {
       }
     });
     setCourseLengthMeters(totalLengthMapUnits / mapUnitsPerMeter);
-  }, [mapScaleSettings, courseState.elements, mapNaturalDimensions, mapSourceType]); 
+  }, [mapScaleSettings, courseState.elements, mapNaturalDimensions, mapSourceType, mapUnitsPerMeter]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      const hasWorkInProgress = courseState.elements.length > 0 || !!processedMapForDisplay || mapScaleSettings.mode !== 'none';
+      if (!hasWorkInProgress) {
+        return;
+      }
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [courseState.elements.length, processedMapForDisplay, mapScaleSettings.mode]);
 
   let legStartStatusMessage = '';
   if (legStartElementId) {
@@ -705,6 +910,8 @@ const App: React.FC = () => {
   } else if ((currentTool === Tool.AREA_CORRIDOR || currentTool === Tool.AREA_FORBIDDEN) && drawingAreaPoints.length > 0) {
     statusBarMessage = `Drawing Area: ${drawingAreaPoints.length} points (Enter to finish, Esc to cancel)`;
   }
+
+  const hasCourseData = courseState.elements.length > 0 || !!processedMapForDisplay || !!courseState.mapFileName;
 
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-900 text-gray-200">
@@ -742,7 +949,7 @@ const App: React.FC = () => {
       <Toolbar
         currentTool={currentTool}
         onSetTool={tool => {
-            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null); 
+            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null);
             if (isMeasuringRefLine) { setIsMeasuringRefLine(false); setRefLinePoints([]); }
         }}
         onUndo={undo} canUndo={canUndo} onRedo={redo} canRedo={canRedo}
@@ -750,6 +957,7 @@ const App: React.FC = () => {
         onDeleteSelected={handleDeleteSelected} isElementSelected={!!courseState.selectedElementId}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onExportPdf={handleExportPdf} isMapLoaded={!!processedMapForDisplay}
+        onResetCourse={resetCourse} hasCourseData={hasCourseData}
       />
 
       <div ref={mapDisplayWrapperRef} className="flex flex-1 overflow-hidden print:overflow-visible">
@@ -772,13 +980,21 @@ const App: React.FC = () => {
           controlSymbolScaleUI={controlSymbolScaleUI}
           finishSymbolScaleUI={finishSymbolScaleUI}
         />
-        <ControlDescriptionPanel
-          selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
-          allCourseElements={courseState.elements}
-          onUpdateDescription={handleUpdateDescription}
-          onExportDescriptions={handleExportDescriptions}
-          // onUpdateControlRadius removed
-        />
+        <div className="w-96 flex flex-col border-l border-gray-700 bg-gray-900 flex-shrink-0">
+          <ControlDescriptionPanel
+            selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
+            allCourseElements={courseState.elements}
+            onUpdateDescription={handleUpdateDescription}
+            onExportDescriptions={handleExportDescriptions}
+            // onUpdateControlRadius removed
+          />
+          <RouteAnalysisPanel
+            courseElements={courseState.elements}
+            mapUnitsPerMeter={mapUnitsPerMeter}
+            mapBounds={mapNaturalDimensions}
+            onUpdateAreaSpeedMultiplier={handleUpdateAreaSpeedMultiplier}
+          />
+        </div>
       </div>
       <div className="p-1 bg-black text-xs text-center text-gray-400 print:hidden flex flex-wrap justify-center items-center gap-x-2">
         <span>Tool: <span className="text-teal-300">{currentTool}</span></span>
@@ -787,6 +1003,7 @@ const App: React.FC = () => {
         <span>| Elements: <span className="text-gray-200">{courseState.elements.length}</span></span>
         <span>| Selected: <span className="text-gray-200">{courseState.selectedElementId?.substring(0,8) || 'None'}</span></span>
         {processedMapForDisplay && <span>| Course Length: <span className="text-gray-200">{formatCourseLength(courseLengthMeters)}</span></span>}
+        <span>| Autosave: <span className="text-gray-200">{formatAutosaveTime(lastAutosaveTimestamp)}</span></span>
         {statusBarMessage && <span className="text-yellow-400">{statusBarMessage}</span>}
       </div>
     </div>
