@@ -1,9 +1,9 @@
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Tool, Point, MapTransform, CourseElement, ElementType, StartElement, ControlElement, FinishElement, LegElement, AreaElement,
   PDFDocumentProxy, PDFPageProxy, CourseData, ControlDescriptionData, getDefaultControlDescription, AreaKind,
-  MapScaleSettings, MapScaleMode
+  MapScaleSettings, DistancePreview
 } from './types';
 import { useHistory } from './hooks/useHistory';
 import { Toolbar } from './components/Toolbar';
@@ -71,9 +71,23 @@ const getRotationAngleForStart = (startElement: StartElement, allElements: Cours
   if (targetElement) {
     const dx = targetElement.center.x - startElement.center.x;
     const dy = targetElement.center.y - startElement.center.y;
-    return Math.atan2(dy, dx) + Math.PI / 2; 
+    return Math.atan2(dy, dx) + Math.PI / 2;
   }
-  return 0; 
+  return 0;
+};
+
+const computeMapUnitsPerMeter = (settings: MapScaleSettings): number | null => {
+  if (settings.mode === 'ratio' && settings.ratioValue && settings.ratioValue > 0) {
+    return POINTS_PER_METER_AT_1_TO_1_SCALE / settings.ratioValue;
+  }
+  if (
+    settings.mode === 'referenceLength' &&
+    settings.mapUnitsOnScreen && settings.mapUnitsOnScreen > 0 &&
+    settings.realWorldMeters && settings.realWorldMeters > 0
+  ) {
+    return settings.mapUnitsOnScreen / settings.realWorldMeters;
+  }
+  return null;
 };
 
 const App: React.FC = () => {
@@ -102,10 +116,30 @@ const App: React.FC = () => {
   const [mapScaleSettings, setMapScaleSettings] = useState<MapScaleSettings>({ mode: 'none' });
   const [courseLengthMeters, setCourseLengthMeters] = useState<number | null>(null);
 
+  const [distancePreview, setDistancePreview] = useState<DistancePreview | null>(null);
+
   const [isMeasuringRefLine, setIsMeasuringRefLine] = useState(false);
   const [refLinePoints, setRefLinePoints] = useState<Point[]>([]);
 
   const mapDisplayWrapperRef = useRef<HTMLDivElement>(null);
+
+  const mapUnitsPerMeter = useMemo(() => computeMapUnitsPerMeter(mapScaleSettings), [mapScaleSettings]);
+  const convertMapUnitsToMeters = useCallback(
+    (mapUnits: number): number | null => {
+      if (!mapUnitsPerMeter || mapUnitsPerMeter <= 0) return null;
+      return mapUnits / mapUnitsPerMeter;
+    },
+    [mapUnitsPerMeter]
+  );
+
+  useEffect(() => {
+    setDistancePreview(prev => {
+      if (!prev) return prev;
+      const updatedMeters = convertMapUnitsToMeters(prev.mapUnits);
+      if (prev.meters === updatedMeters) return prev;
+      return { ...prev, meters: updatedMeters };
+    });
+  }, [convertMapUnitsToMeters]);
 
   // Global Symbol Scale UI states (1-10, default 5)
   const [startSymbolScaleUI, setStartSymbolScaleUI] = useState<number>(5);
@@ -126,10 +160,12 @@ const App: React.FC = () => {
     resetHistory(initialAppState);
     setDrawingAreaPoints([]);
     setLegStartElementId(null); 
-    setMapScaleSettings({ mode: 'none' }); 
+    setMapScaleSettings({ mode: 'none' });
     setCourseLengthMeters(null);
     setIsMeasuringRefLine(false);
     setRefLinePoints([]);
+    setCurrentMapMouseForPreview(null);
+    setDistancePreview(null);
     // Reset symbol UI scales
     setStartSymbolScaleUI(5);
     setControlSymbolScaleUI(5);
@@ -298,8 +334,10 @@ const App: React.FC = () => {
   const handleStartReferenceLineMeasurement = () => {
     setIsMeasuringRefLine(true);
     setRefLinePoints([]);
-    setCurrentTool(Tool.SELECT); 
+    setCurrentTool(Tool.SELECT);
     setCourseState(prev => ({...prev, selectedElementId: null}));
+    setDistancePreview(null);
+    setCurrentMapMouseForPreview(null);
   };
 
   const handleCanvasMouseDown = useCallback((mapPoint: Point, event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -314,11 +352,13 @@ const App: React.FC = () => {
                 setMapScaleSettings(s => ({
                     ...s,
                     mode: 'referenceLength',
-                    mapUnitsOnScreen: parseFloat(dist.toFixed(2)), 
+                    mapUnitsOnScreen: parseFloat(dist.toFixed(2)),
                 }));
-                setIsMeasuringRefLine(false); 
-                setTimeout(() => setRefLinePoints([]),0); 
-                return []; 
+                setIsMeasuringRefLine(false);
+                setDistancePreview(null);
+                setCurrentMapMouseForPreview(null);
+                setTimeout(() => setRefLinePoints([]),0);
+                return [];
             }
             return newPoints;
         });
@@ -377,7 +417,7 @@ const App: React.FC = () => {
         }
         if (clickedConnectableElement) {
             if (!legStartElementId) setLegStartElementId(clickedConnectableElement.id);
-            else if (legStartElementId !== clickedConnectableElement.id) { 
+            else if (legStartElementId !== clickedConnectableElement.id) {
                 const newLeg: LegElement = { id: generateId(), type: ElementType.LEG, fromElementId: legStartElementId, toElementId: clickedConnectableElement.id, style: 'solid' };
                 setCourseState(prev => {
                     let updatedElements = [...prev.elements, newLeg];
@@ -390,9 +430,15 @@ const App: React.FC = () => {
                     });
                     return {...prev, elements: updatedElements};
                 });
-                setLegStartElementId(null); 
+                setLegStartElementId(null);
+                setDistancePreview(null);
+                setCurrentMapMouseForPreview(null);
             }
-        } else setLegStartElementId(null); 
+        } else {
+            setLegStartElementId(null);
+            setDistancePreview(null);
+            setCurrentMapMouseForPreview(null);
+        }
     } else if (currentTool === Tool.AREA_FORBIDDEN || currentTool === Tool.AREA_CORRIDOR) {
         setDrawingAreaPoints(prev => [...prev, mapPoint]);
     }
@@ -409,6 +455,34 @@ const App: React.FC = () => {
     } else {
         setCurrentMapMouseForPreview(null);
     }
+
+    let nextDistancePreview: DistancePreview | null = null;
+    if (isMeasuringRefLine && refLinePoints.length === 1) {
+      const startPoint = refLinePoints[0];
+      const mapUnits = geomDistance(startPoint, mapPoint);
+      nextDistancePreview = {
+        kind: 'referenceLine',
+        start: startPoint,
+        end: mapPoint,
+        mapUnits,
+        meters: convertMapUnitsToMeters(mapUnits),
+      };
+    } else if (currentTool === Tool.LEG && legStartElementId) {
+      const startElement = courseState.elements.find(el => el.id === legStartElementId);
+      if (startElement && 'center' in startElement) {
+        const startPoint = (startElement as StartElement | ControlElement | FinishElement).center;
+        const mapUnits = geomDistance(startPoint, mapPoint);
+        nextDistancePreview = {
+          kind: 'leg',
+          start: startPoint,
+          end: mapPoint,
+          mapUnits,
+          meters: convertMapUnitsToMeters(mapUnits),
+          fromElementId: legStartElementId,
+        };
+      }
+    }
+    setDistancePreview(nextDistancePreview);
 
     if (!isDragging || !dragStartPoint) return;
 
@@ -428,7 +502,18 @@ const App: React.FC = () => {
         updateElementPosition(courseState.selectedElementId, { x: (originalElementPos as Point).x + dx, y: (originalElementPos as Point).y + dy });
       }
     }
-  }, [isDragging, currentTool, dragStartPoint, courseState, originalElementPos, updateElementPosition, legStartElementId, isMeasuringRefLine, startSymbolScaleUI]); // Added startSymbolScaleUI for rotation recalc
+  }, [
+    isDragging,
+    currentTool,
+    dragStartPoint,
+    courseState,
+    originalElementPos,
+    updateElementPosition,
+    legStartElementId,
+    isMeasuringRefLine,
+    refLinePoints,
+    convertMapUnitsToMeters,
+  ]);
 
   const handleCanvasMouseUp = useCallback(() => {
     if (isMeasuringRefLine) { return; }
@@ -643,7 +728,9 @@ const App: React.FC = () => {
           setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null);
         }
       } else if (event.key === 'Escape') {
-        setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null); 
+        setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null);
+        if (isMeasuringRefLine) { setIsMeasuringRefLine(false); setRefLinePoints([]); }
+        setDistancePreview(null);
         if (courseState.selectedElementId) setCourseState(prev => ({...prev, selectedElementId: null}));
       } else if ((event.key === 'Delete' || event.key === 'Backspace') && !(event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || (event.target as HTMLElement).isContentEditable) ) {
           if (courseState.selectedElementId) handleDeleteSelected();
@@ -657,12 +744,6 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (mapScaleSettings.mode === 'none' || !mapNaturalDimensions || courseState.elements.length === 0) { setCourseLengthMeters(null); return; }
-    let mapUnitsPerMeter: number | null = null;
-    if (mapScaleSettings.mode === 'ratio' && mapScaleSettings.ratioValue && mapScaleSettings.ratioValue > 0) {
-      mapUnitsPerMeter = POINTS_PER_METER_AT_1_TO_1_SCALE / mapScaleSettings.ratioValue;
-    } else if (mapScaleSettings.mode === 'referenceLength' && mapScaleSettings.mapUnitsOnScreen && mapScaleSettings.mapUnitsOnScreen > 0 && mapScaleSettings.realWorldMeters && mapScaleSettings.realWorldMeters > 0) {
-      mapUnitsPerMeter = mapScaleSettings.mapUnitsOnScreen / mapScaleSettings.realWorldMeters;
-    }
     if (!mapUnitsPerMeter || mapUnitsPerMeter <= 0) { setCourseLengthMeters(null); return; }
     let totalLengthMapUnits = 0;
     courseState.elements.forEach(el => {
@@ -676,7 +757,7 @@ const App: React.FC = () => {
       }
     });
     setCourseLengthMeters(totalLengthMapUnits / mapUnitsPerMeter);
-  }, [mapScaleSettings, courseState.elements, mapNaturalDimensions, mapSourceType]); 
+  }, [mapScaleSettings, courseState.elements, mapNaturalDimensions, mapUnitsPerMeter, mapSourceType]);
 
   let legStartStatusMessage = '';
   if (legStartElementId) {
@@ -693,15 +774,38 @@ const App: React.FC = () => {
   const formatCourseLength = (lengthInMeters: number | null): string => {
     if (lengthInMeters === null && mapScaleSettings.mode !== 'none') return 'Calculating...';
     if (lengthInMeters === null && mapScaleSettings.mode === 'none') return 'Scale not set';
-    if (lengthInMeters === null) return 'Scale not set'; 
+    if (lengthInMeters === null) return 'Scale not set';
     return lengthInMeters >= 1000 ? `${(lengthInMeters / 1000).toFixed(2)} km` : `${lengthInMeters.toFixed(0)} m`;
+  };
+
+  const formatDistancePreviewForStatus = (preview: DistancePreview): string => {
+    const mapUnitsValue = preview.mapUnits;
+    const mapUnitsText = mapUnitsValue >= 100 ? `${mapUnitsValue.toFixed(0)} map units` : `${mapUnitsValue.toFixed(2)} map units`;
+    if (preview.meters === null || preview.meters === undefined) {
+      return mapUnitsText;
+    }
+    const metersValue = preview.meters;
+    const realWorldText = metersValue >= 1000
+      ? `${(metersValue / 1000).toFixed(2)} km`
+      : `${metersValue.toFixed(metersValue >= 100 ? 0 : 1)} m`;
+    return `${mapUnitsText} / ${realWorldText}`;
   };
 
   let statusBarMessage = "";
   if (isMeasuringRefLine) {
-    statusBarMessage = refLinePoints.length === 0 ? "Measuring: Click start point of reference line." : "Measuring: Click end point of reference line.";
+    if (refLinePoints.length === 0) {
+      statusBarMessage = "Measuring: Click start point of reference line.";
+    } else {
+      statusBarMessage = "Measuring: Click end point of reference line.";
+      if (distancePreview && distancePreview.kind === 'referenceLine') {
+        statusBarMessage += ` (${formatDistancePreviewForStatus(distancePreview)})`;
+      }
+    }
   } else if (legStartElementId) {
     statusBarMessage = legStartStatusMessage + (currentMapMouseForPreview ? " (Click to connect, Esc to cancel)" : "");
+    if (distancePreview && distancePreview.kind === 'leg') {
+      statusBarMessage += ` — ${formatDistancePreviewForStatus(distancePreview)}`;
+    }
   } else if ((currentTool === Tool.AREA_CORRIDOR || currentTool === Tool.AREA_FORBIDDEN) && drawingAreaPoints.length > 0) {
     statusBarMessage = `Drawing Area: ${drawingAreaPoints.length} points (Enter to finish, Esc to cancel)`;
   }
@@ -742,7 +846,8 @@ const App: React.FC = () => {
       <Toolbar
         currentTool={currentTool}
         onSetTool={tool => {
-            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null); 
+            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null);
+            setDistancePreview(null);
             if (isMeasuringRefLine) { setIsMeasuringRefLine(false); setRefLinePoints([]); }
         }}
         onUndo={undo} canUndo={canUndo} onRedo={redo} canRedo={canRedo}
@@ -766,11 +871,12 @@ const App: React.FC = () => {
           currentTool={currentTool}
           currentMouseMapPos={currentMapMouseForPreview} 
           isDragging={isDragging}
-          isMeasuringRefLine={isMeasuringRefLine} 
-          refLinePoints={refLinePoints} 
+          isMeasuringRefLine={isMeasuringRefLine}
+          refLinePoints={refLinePoints}
           startSymbolScaleUI={startSymbolScaleUI} // Pass UI scales
           controlSymbolScaleUI={controlSymbolScaleUI}
           finishSymbolScaleUI={finishSymbolScaleUI}
+          distancePreview={distancePreview}
         />
         <ControlDescriptionPanel
           selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}

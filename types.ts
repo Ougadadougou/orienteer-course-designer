@@ -96,6 +96,15 @@ export interface MapTransform {
   offset: Point; // Top-left corner of the viewport in page coordinates
 }
 
+export interface DistancePreview {
+  kind: 'referenceLine' | 'leg';
+  start: Point;
+  end: Point;
+  mapUnits: number;
+  meters?: number | null;
+  fromElementId?: string;
+}
+
 export interface CourseData {
   elements: CourseElement[];
   mapFileName?: string; // Optional: to remind user which map was used
