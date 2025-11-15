@@ -1,5 +1,5 @@
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import {
   Tool, Point, MapTransform, CourseElement, ElementType, StartElement, ControlElement, FinishElement, LegElement, AreaElement,
   PDFDocumentProxy, PDFPageProxy, CourseData, ControlDescriptionData, getDefaultControlDescription, AreaKind,
@@ -111,6 +111,33 @@ const App: React.FC = () => {
   const [startSymbolScaleUI, setStartSymbolScaleUI] = useState<number>(5);
   const [controlSymbolScaleUI, setControlSymbolScaleUI] = useState<number>(5);
   const [finishSymbolScaleUI, setFinishSymbolScaleUI] = useState<number>(5);
+  const [legStyle, setLegStyle] = useState<'solid' | 'dashed' | 'uncrossable'>('solid');
+
+  const selectedElement = useMemo(
+    () => courseState.elements.find(el => el.id === courseState.selectedElementId) || null,
+    [courseState.elements, courseState.selectedElementId]
+  );
+  const isLegSelected = selectedElement?.type === ElementType.LEG;
+
+  useEffect(() => {
+    if (selectedElement?.type === ElementType.LEG && selectedElement.style !== legStyle) {
+      setLegStyle(selectedElement.style);
+    }
+  }, [selectedElement, legStyle]);
+
+  const handleLegStyleChange = useCallback((style: 'solid' | 'dashed' | 'uncrossable') => {
+    setLegStyle(style);
+    setCourseState(prev => {
+      if (!prev.selectedElementId) return prev;
+      const index = prev.elements.findIndex(el => el.id === prev.selectedElementId);
+      if (index === -1) return prev;
+      const selected = prev.elements[index];
+      if (selected.type !== ElementType.LEG || selected.style === style) return prev;
+      const updatedElements = [...prev.elements];
+      updatedElements[index] = { ...selected, style } as LegElement;
+      return { ...prev, elements: updatedElements };
+    });
+  }, [setCourseState]);
 
   const handleSetStartSymbolScaleUI = (scale: number) => {
     if (scale >= 1 && scale <= 10) setStartSymbolScaleUI(scale);
@@ -134,6 +161,7 @@ const App: React.FC = () => {
     setStartSymbolScaleUI(5);
     setControlSymbolScaleUI(5);
     setFinishSymbolScaleUI(5);
+    setLegStyle('solid');
   }, [resetHistory]);
 
   const fitMapToView = useCallback(() => {
@@ -378,7 +406,7 @@ const App: React.FC = () => {
         if (clickedConnectableElement) {
             if (!legStartElementId) setLegStartElementId(clickedConnectableElement.id);
             else if (legStartElementId !== clickedConnectableElement.id) { 
-                const newLeg: LegElement = { id: generateId(), type: ElementType.LEG, fromElementId: legStartElementId, toElementId: clickedConnectableElement.id, style: 'solid' };
+                const newLeg: LegElement = { id: generateId(), type: ElementType.LEG, fromElementId: legStartElementId, toElementId: clickedConnectableElement.id, style: legStyle };
                 setCourseState(prev => {
                     let updatedElements = [...prev.elements, newLeg];
                     [newLeg.fromElementId, newLeg.toElementId].forEach(endId => {
@@ -399,7 +427,7 @@ const App: React.FC = () => {
   }, [
     currentTool, courseState, mapTransform.scale, setCourseState, legStartElementId,
     startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI, // Added UI scales
-    isMeasuringRefLine
+    isMeasuringRefLine, legStyle
   ]);
 
   const handleCanvasMouseMove = useCallback((mapPoint: Point, event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -742,7 +770,7 @@ const App: React.FC = () => {
       <Toolbar
         currentTool={currentTool}
         onSetTool={tool => {
-            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null); 
+            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null);
             if (isMeasuringRefLine) { setIsMeasuringRefLine(false); setRefLinePoints([]); }
         }}
         onUndo={undo} canUndo={canUndo} onRedo={redo} canRedo={canRedo}
@@ -750,6 +778,9 @@ const App: React.FC = () => {
         onDeleteSelected={handleDeleteSelected} isElementSelected={!!courseState.selectedElementId}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onExportPdf={handleExportPdf} isMapLoaded={!!processedMapForDisplay}
+        legStyle={legStyle}
+        onLegStyleChange={handleLegStyleChange}
+        isLegSelected={isLegSelected}
       />
 
       <div ref={mapDisplayWrapperRef} className="flex flex-1 overflow-hidden print:overflow-visible">
@@ -773,7 +804,7 @@ const App: React.FC = () => {
           finishSymbolScaleUI={finishSymbolScaleUI}
         />
         <ControlDescriptionPanel
-          selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
+          selectedControl={selectedElement?.type === ElementType.CONTROL ? (selectedElement as ControlElement) : null}
           allCourseElements={courseState.elements}
           onUpdateDescription={handleUpdateDescription}
           onExportDescriptions={handleExportDescriptions}
