@@ -1,6 +1,9 @@
 
 import React from 'react';
 import { Tool } from '../types';
+import type { LegElement } from '../types';
+
+type LegStyle = LegElement['style'];
 import { SelectIcon } from './icons/SelectIcon';
 import { PanIcon } from './icons/PanIcon';
 import { StartIcon } from './icons/StartIcon';
@@ -52,15 +55,19 @@ interface ToolbarProps {
   isElementSelected: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
-  onExportPdf: () => void; 
+  onExportPdf: () => void;
   isMapLoaded: boolean;
+  legStyle: LegStyle;
+  onLegStyleChange: (style: LegStyle) => void;
+  isLegSelected: boolean;
   // elementDisplayScaleFactor and onSetElementDisplayScaleFactor are removed
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
-  currentTool, onSetTool, onUndo, canUndo, onRedo, canRedo, 
-  onSaveCourseData, onLoad, onDeleteSelected, isElementSelected, 
-  onZoomIn, onZoomOut, onExportPdf, isMapLoaded
+  currentTool, onSetTool, onUndo, canUndo, onRedo, canRedo,
+  onSaveCourseData, onLoad, onDeleteSelected, isElementSelected,
+  onZoomIn, onZoomOut, onExportPdf, isMapLoaded,
+  legStyle, onLegStyleChange, isLegSelected
 }) => {
   const loadInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -88,9 +95,23 @@ export const Toolbar: React.FC<ToolbarProps> = ({
         />
       ))}
       <div className="mx-2 h-8 border-l border-gray-600"></div>
+      <div className="flex items-center gap-2 text-sm text-gray-300">
+        <span className="font-medium text-gray-200">Leg Style{isLegSelected ? ' (Selected)' : ''}</span>
+        <select
+          value={legStyle}
+          onChange={event => onLegStyleChange(event.target.value as LegStyle)}
+          className="bg-gray-700 text-gray-200 border border-gray-600 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-teal-500"
+          title="Set default leg style. Updates selected leg when applicable."
+        >
+          <option value="solid">Solid</option>
+          <option value="dashed">Dashed</option>
+          <option value="uncrossable">Uncrossable</option>
+        </select>
+      </div>
+      <div className="mx-2 h-8 border-l border-gray-600"></div>
       <ToolButton label="Zoom In" icon={<span className="font-bold text-lg">+</span>} onClick={onZoomIn} />
       <ToolButton label="Zoom Out" icon={<span className="font-bold text-lg">-</span>} onClick={onZoomOut} />
-      
+
       {/* Symbol Scale input removed */}
       {/* <div className="mx-1 h-8 border-l border-gray-600"></div> */}
 
