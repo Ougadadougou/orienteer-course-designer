@@ -21,6 +21,68 @@ import {
 } from './constants';
 import { getElementAtPoint, isPointInCircle, isPointInStartTriangle, distance as geomDistance } from './utils/geometry';
 
+const AUTOSAVE_STORAGE_KEY = 'orienteer-course-designer-autosave';
+
+interface AutosavePayload {
+  version?: number;
+  savedAt?: number;
+  courseData: CourseData;
+  mapScaleSettings?: MapScaleSettings;
+  startSymbolScaleUI?: number;
+  controlSymbolScaleUI?: number;
+  finishSymbolScaleUI?: number;
+}
+
+interface AutosaveRestorePromptProps {
+  isOpen: boolean;
+  mapFileName?: string;
+  savedAt?: number;
+  onRestore: () => void;
+  onDiscard: () => void;
+}
+
+const AutosaveRestorePrompt: React.FC<AutosaveRestorePromptProps> = ({
+  isOpen,
+  mapFileName,
+  savedAt,
+  onRestore,
+  onDiscard,
+}) => {
+  if (!isOpen) return null;
+
+  const formattedTimestamp = savedAt ? new Date(savedAt).toLocaleString() : null;
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 max-w-sm rounded-lg border border-teal-500 bg-gray-900 p-4 text-sm shadow-lg">
+      <div className="text-base font-semibold text-white">Restore autosaved course?</div>
+      <p className="mt-2 text-gray-200">
+        {mapFileName
+          ? `We found an autosaved course for "${mapFileName}". Would you like to restore it?`
+          : 'We found an autosaved course. Would you like to restore it?'}
+      </p>
+      {formattedTimestamp && (
+        <p className="mt-1 text-xs text-gray-400">Saved {formattedTimestamp}</p>
+      )}
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          className="rounded bg-gray-700 px-3 py-1 text-gray-200 transition hover:bg-gray-600"
+          onClick={onDiscard}
+        >
+          Start fresh
+        </button>
+        <button
+          type="button"
+          className="rounded bg-teal-600 px-3 py-1 font-semibold text-white transition hover:bg-teal-500"
+          onClick={onRestore}
+        >
+          Restore
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const generateId = () => `el_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
 interface AppState {
@@ -112,6 +174,12 @@ const App: React.FC = () => {
   const [controlSymbolScaleUI, setControlSymbolScaleUI] = useState<number>(5);
   const [finishSymbolScaleUI, setFinishSymbolScaleUI] = useState<number>(5);
 
+  const [isAutosavePromptOpen, setIsAutosavePromptOpen] = useState(false);
+  const [pendingAutosave, setPendingAutosave] = useState<AutosavePayload | null>(null);
+  const [isAutosaveReady, setIsAutosaveReady] = useState(false);
+  const autosaveSnapshotRef = useRef<string | null>(null);
+  const hasCheckedAutosaveRef = useRef(false);
+
   const handleSetStartSymbolScaleUI = (scale: number) => {
     if (scale >= 1 && scale <= 10) setStartSymbolScaleUI(scale);
   };
@@ -121,6 +189,47 @@ const App: React.FC = () => {
   const handleSetFinishSymbolScaleUI = (scale: number) => {
     if (scale >= 1 && scale <= 10) setFinishSymbolScaleUI(scale);
   };
+
+  const applyCourseData = useCallback((loadedData: CourseData, options?: { startSymbolScaleForRotation?: number }) => {
+    if (!loadedData || !Array.isArray(loadedData.elements)) {
+      return { success: false as const };
+    }
+
+    const sanitizedElements = loadedData.elements.map(el => {
+      const { size, radius, outerRadius, innerRadius, ...restOfElement } = el as any;
+      const sanitizedEl = { ...restOfElement } as CourseElement;
+
+      if (sanitizedEl.type === ElementType.CONTROL) {
+        const controlEl = sanitizedEl as ControlElement;
+        if (!controlEl.description) {
+          controlEl.description = getDefaultControlDescription(controlEl.number);
+        }
+      }
+
+      if (sanitizedEl.type === ElementType.START) {
+        const startEl = sanitizedEl as StartElement;
+        if (typeof startEl.rotationAngle !== 'number') {
+          startEl.rotationAngle = 0;
+        }
+      }
+
+      return sanitizedEl;
+    }) as CourseElement[];
+
+    const rotationScale = options?.startSymbolScaleForRotation ?? startSymbolScaleUI;
+    const finalLoadedElements = sanitizedElements.map(el => (
+      el.type === ElementType.START
+        ? { ...el, rotationAngle: getRotationAngleForStart(el as StartElement, sanitizedElements, rotationScale) }
+        : el
+    ));
+
+    resetHistory({ elements: finalLoadedElements, selectedElementId: null, mapFileName: loadedData.mapFileName });
+
+    return {
+      success: true as const,
+      mapFileName: loadedData.mapFileName,
+    };
+  }, [resetHistory, startSymbolScaleUI]);
 
   const resetCourse = useCallback(() => {
     resetHistory(initialAppState);
@@ -177,6 +286,140 @@ const App: React.FC = () => {
 
     setMapTransform({ scale: clampedScale, offset: { x: offsetX, y: offsetY } });
   }, [processedMapForDisplay, mapNaturalDimensions]);
+
+  useEffect(() => {
+    if (hasCheckedAutosaveRef.current) return;
+    hasCheckedAutosaveRef.current = true;
+
+    if (typeof window === 'undefined') {
+      setIsAutosaveReady(true);
+      return;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(AUTOSAVE_STORAGE_KEY);
+      if (!raw) {
+        setIsAutosaveReady(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as AutosavePayload;
+      if (!parsed || !parsed.courseData || !Array.isArray(parsed.courseData.elements)) {
+        window.localStorage.removeItem(AUTOSAVE_STORAGE_KEY);
+        setIsAutosaveReady(true);
+        return;
+      }
+
+      const hasMeaningfulData = parsed.courseData.elements.length > 0 || !!parsed.courseData.mapFileName;
+      if (!hasMeaningfulData) {
+        window.localStorage.removeItem(AUTOSAVE_STORAGE_KEY);
+        setIsAutosaveReady(true);
+        return;
+      }
+
+      setPendingAutosave(parsed);
+      setIsAutosavePromptOpen(true);
+    } catch (error) {
+      console.error('Failed to read autosave data from storage:', error);
+      try {
+        window.localStorage.removeItem(AUTOSAVE_STORAGE_KEY);
+      } catch {
+        /* ignore */
+      }
+      setIsAutosaveReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAutosaveReady) return;
+    if (typeof window === 'undefined') return;
+
+    try {
+      if (courseState.elements.length === 0 && !courseState.mapFileName) {
+        window.localStorage.removeItem(AUTOSAVE_STORAGE_KEY);
+        autosaveSnapshotRef.current = null;
+        return;
+      }
+
+      const payloadBase = {
+        version: 1,
+        courseData: {
+          elements: courseState.elements,
+          mapFileName: courseState.mapFileName,
+        },
+        mapScaleSettings,
+        startSymbolScaleUI,
+        controlSymbolScaleUI,
+        finishSymbolScaleUI,
+      } satisfies Omit<AutosavePayload, 'savedAt'>;
+
+      const baseSnapshot = JSON.stringify(payloadBase);
+      if (autosaveSnapshotRef.current === baseSnapshot) {
+        return;
+      }
+
+      autosaveSnapshotRef.current = baseSnapshot;
+      const payloadToStore: AutosavePayload = {
+        ...payloadBase,
+        savedAt: Date.now(),
+      };
+
+      window.localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(payloadToStore));
+    } catch (error) {
+      console.error('Failed to update autosave data in storage:', error);
+    }
+  }, [courseState, mapScaleSettings, startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI, isAutosaveReady]);
+
+  const handleRestoreAutosave = useCallback(() => {
+    if (!pendingAutosave) {
+      setIsAutosavePromptOpen(false);
+      setIsAutosaveReady(true);
+      return;
+    }
+
+    const rotationScale = pendingAutosave.startSymbolScaleUI ?? startSymbolScaleUI;
+
+    resetCourse();
+    const result = applyCourseData(pendingAutosave.courseData, { startSymbolScaleForRotation: rotationScale });
+    if (!result.success) {
+      console.error('Autosave data was invalid and could not be restored.');
+      try {
+        if (typeof window !== 'undefined') {
+          window.localStorage.removeItem(AUTOSAVE_STORAGE_KEY);
+        }
+      } catch {
+        /* ignore */
+      }
+    } else {
+      if (pendingAutosave.mapScaleSettings) {
+        setMapScaleSettings(pendingAutosave.mapScaleSettings);
+      } else {
+        setMapScaleSettings({ mode: 'none' });
+      }
+      setStartSymbolScaleUI(rotationScale);
+      setControlSymbolScaleUI(pendingAutosave.controlSymbolScaleUI ?? 5);
+      setFinishSymbolScaleUI(pendingAutosave.finishSymbolScaleUI ?? 5);
+    }
+
+    setPendingAutosave(null);
+    setIsAutosavePromptOpen(false);
+    setIsAutosaveReady(true);
+  }, [applyCourseData, pendingAutosave, resetCourse, setMapScaleSettings, setStartSymbolScaleUI, setControlSymbolScaleUI, setFinishSymbolScaleUI, startSymbolScaleUI]);
+
+  const handleDiscardAutosave = useCallback(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(AUTOSAVE_STORAGE_KEY);
+      }
+    } catch {
+      /* ignore */
+    }
+
+    resetCourse();
+    setPendingAutosave(null);
+    setIsAutosavePromptOpen(false);
+    setIsAutosaveReady(true);
+  }, [resetCourse]);
 
   useEffect(() => {
     if (processedMapForDisplay && mapNaturalDimensions) {
@@ -565,43 +808,28 @@ const App: React.FC = () => {
       reader.onload = (e) => {
         try {
           const loadedData = JSON.parse(e.target?.result as string) as CourseData; // Assuming CourseData might store scales
-          if (loadedData && Array.isArray(loadedData.elements)) {
-            const sanitizedElements = loadedData.elements.map(el => {
-              // Remove size/radius properties from loaded elements as they are no longer stored
-              const { size, radius, outerRadius, innerRadius, ...restOfElement } = el as any;
-              let sanitizedEl = restOfElement;
+          const result = applyCourseData(loadedData);
 
-              if (sanitizedEl.type === ElementType.CONTROL) {
-                if (!(sanitizedEl as ControlElement).description) {
-                  (sanitizedEl as ControlElement).description = getDefaultControlDescription((sanitizedEl as ControlElement).number);
-                }
-              }
-              if (sanitizedEl.type === ElementType.START) {
-                if (typeof (sanitizedEl as StartElement).rotationAngle === 'undefined') {
-                  (sanitizedEl as StartElement).rotationAngle = 0; 
-                }
-              }
-              return sanitizedEl as CourseElement;
-            });
+          if (!result.success) {
+            alert("Invalid course file format.");
+            return;
+          }
 
-            // After sanitizing individual elements, recalculate Start rotations based on all loaded elements and current startSymbolScaleUI
-            let finalLoadedElements = sanitizedElements.map(el => (el.type === ElementType.START) ? { ...el, rotationAngle: getRotationAngleForStart(el as StartElement, sanitizedElements, startSymbolScaleUI) } : el);
-            
-            resetHistory({ elements: finalLoadedElements, selectedElementId: null, mapFileName: loadedData.mapFileName });
-            
-            // Restore UI scales if they were saved in the JSON, otherwise keep current or default
-            // if (typeof (loadedData as any).startSymbolScaleUI === 'number') setStartSymbolScaleUI((loadedData as any).startSymbolScaleUI); else setStartSymbolScaleUI(5);
-            // if (typeof (loadedData as any).controlSymbolScaleUI === 'number') setControlSymbolScaleUI((loadedData as any).controlSymbolScaleUI); else setControlSymbolScaleUI(5);
-            // if (typeof (loadedData as any).finishSymbolScaleUI === 'number') setFinishSymbolScaleUI((loadedData as any).finishSymbolScaleUI); else setFinishSymbolScaleUI(5);
-
-
-            if (loadedData.mapFileName && !processedMapForDisplay) alert(`Course loaded. Please re-upload the map file: ${loadedData.mapFileName}`);
-            else if (loadedData.mapFileName && processedMapForDisplay && courseState.mapFileName && courseState.mapFileName.toLowerCase() !== loadedData.mapFileName.toLowerCase()) alert(`Course loaded for map "${loadedData.mapFileName}". Your current map is "${courseState.mapFileName}". Results may vary.`);
-            else alert("Course loaded successfully.");
-          } else alert("Invalid course file format.");
+          if (loadedData.mapFileName && !processedMapForDisplay) {
+            alert(`Course loaded. Please re-upload the map file: ${loadedData.mapFileName}`);
+          } else if (
+            loadedData.mapFileName &&
+            processedMapForDisplay &&
+            courseState.mapFileName &&
+            courseState.mapFileName.toLowerCase() !== loadedData.mapFileName.toLowerCase()
+          ) {
+            alert(`Course loaded for map "${loadedData.mapFileName}". Your current map is "${courseState.mapFileName}". Results may vary.`);
+          } else {
+            alert("Course loaded successfully.");
+          }
         } catch (error) { console.error("Error loading course:", error); alert(`Failed to load course file: ${error instanceof Error ? error.message : "Unknown error"}`); }
       }; reader.readAsText(file);
-    } event.target.value = ''; 
+    } event.target.value = '';
   };
 
   const handleExportPdf = async () => {
@@ -789,6 +1017,13 @@ const App: React.FC = () => {
         {processedMapForDisplay && <span>| Course Length: <span className="text-gray-200">{formatCourseLength(courseLengthMeters)}</span></span>}
         {statusBarMessage && <span className="text-yellow-400">{statusBarMessage}</span>}
       </div>
+      <AutosaveRestorePrompt
+        isOpen={isAutosavePromptOpen && !!pendingAutosave}
+        mapFileName={pendingAutosave?.courseData.mapFileName}
+        savedAt={pendingAutosave?.savedAt}
+        onRestore={handleRestoreAutosave}
+        onDiscard={handleDiscardAutosave}
+      />
     </div>
   );
 };
