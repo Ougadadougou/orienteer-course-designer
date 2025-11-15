@@ -52,15 +52,18 @@ interface ToolbarProps {
   isElementSelected: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
-  onExportPdf: () => void; 
+  onExportPdf: () => void;
   isMapLoaded: boolean;
+  onToggleShortcuts: () => void;
+  areShortcutsOpen: boolean;
   // elementDisplayScaleFactor and onSetElementDisplayScaleFactor are removed
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
-  currentTool, onSetTool, onUndo, canUndo, onRedo, canRedo, 
-  onSaveCourseData, onLoad, onDeleteSelected, isElementSelected, 
-  onZoomIn, onZoomOut, onExportPdf, isMapLoaded
+  currentTool, onSetTool, onUndo, canUndo, onRedo, canRedo,
+  onSaveCourseData, onLoad, onDeleteSelected, isElementSelected,
+  onZoomIn, onZoomOut, onExportPdf, isMapLoaded,
+  onToggleShortcuts, areShortcutsOpen,
 }) => {
   const loadInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -108,6 +111,13 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       <ToolButton label="Export Map as PDF" icon={<SaveIcon className="text-red-400" />} onClick={onExportPdf} disabled={!isMapLoaded} />
        <div className="mx-2 h-8 border-l border-gray-600"></div>
        <ToolButton label="Delete Selected" icon={<DeleteIcon />} onClick={onDeleteSelected} disabled={!isElementSelected} />
+      <div className="mx-2 h-8 border-l border-gray-600"></div>
+      <ToolButton
+        label={areShortcutsOpen ? 'Hide Shortcuts' : 'Show Shortcuts'}
+        icon={<span className="font-bold text-lg">?</span>}
+        onClick={onToggleShortcuts}
+        isActive={areShortcutsOpen}
+      />
     </div>
   );
 };

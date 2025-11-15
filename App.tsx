@@ -7,10 +7,11 @@ import {
 } from './types';
 import { useHistory } from './hooks/useHistory';
 import { Toolbar } from './components/Toolbar';
-import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay'; 
+import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay';
 import { ControlDescriptionPanel } from './components/ControlDescriptionPanel';
 import { ScaleSettings } from './components/ScaleSettings';
 import { SymbolSettings } from './components/SymbolSettings';
+import { ShortcutModal } from './components/ShortcutModal';
 import {
   DEFAULT_MAP_SCALE, DEFAULT_MAP_OFFSET, 
   MIN_ZOOM, MAX_ZOOM, ZOOM_SENSITIVITY,
@@ -106,6 +107,8 @@ const App: React.FC = () => {
   const [refLinePoints, setRefLinePoints] = useState<Point[]>([]);
 
   const mapDisplayWrapperRef = useRef<HTMLDivElement>(null);
+
+  const [isShortcutModalOpen, setShortcutModalOpen] = useState(false);
 
   // Global Symbol Scale UI states (1-10, default 5)
   const [startSymbolScaleUI, setStartSymbolScaleUI] = useState<number>(5);
@@ -629,11 +632,18 @@ const App: React.FC = () => {
   
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isShortcutModalOpen) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setShortcutModalOpen(false);
+        }
+        return;
+      }
       if (isMeasuringRefLine && event.key === 'Escape') {
           setIsMeasuringRefLine(false); setRefLinePoints([]); setCurrentMapMouseForPreview(null); event.preventDefault(); return;
       }
-      if (event.ctrlKey || event.metaKey) { 
-        if (event.key === 'z') { undo(); event.preventDefault(); } 
+      if (event.ctrlKey || event.metaKey) {
+        if (event.key === 'z') { undo(); event.preventDefault(); }
         else if (event.key === 'y') { redo(); event.preventDefault(); } return;
       }
       if (event.key === 'Enter') {
@@ -651,7 +661,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentTool, drawingAreaPoints, setCourseState, courseState.selectedElementId, handleDeleteSelected, undo, redo, isMeasuringRefLine, startSymbolScaleUI]); // Added startSymbolScaleUI for rotation recalc dependency
+  }, [currentTool, drawingAreaPoints, setCourseState, courseState.selectedElementId, handleDeleteSelected, undo, redo, isMeasuringRefLine, startSymbolScaleUI, isShortcutModalOpen]); // Added startSymbolScaleUI for rotation recalc dependency
 
   const handleScaleSettingsUpdate = (newSettings: MapScaleSettings) => setMapScaleSettings(newSettings);
 
@@ -742,7 +752,7 @@ const App: React.FC = () => {
       <Toolbar
         currentTool={currentTool}
         onSetTool={tool => {
-            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null); 
+            setCurrentTool(tool); setDrawingAreaPoints([]); setCurrentMapMouseForPreview(null); setLegStartElementId(null);
             if (isMeasuringRefLine) { setIsMeasuringRefLine(false); setRefLinePoints([]); }
         }}
         onUndo={undo} canUndo={canUndo} onRedo={redo} canRedo={canRedo}
@@ -750,6 +760,8 @@ const App: React.FC = () => {
         onDeleteSelected={handleDeleteSelected} isElementSelected={!!courseState.selectedElementId}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onExportPdf={handleExportPdf} isMapLoaded={!!processedMapForDisplay}
+        onToggleShortcuts={() => setShortcutModalOpen(prev => !prev)}
+        areShortcutsOpen={isShortcutModalOpen}
       />
 
       <div ref={mapDisplayWrapperRef} className="flex flex-1 overflow-hidden print:overflow-visible">
@@ -789,6 +801,7 @@ const App: React.FC = () => {
         {processedMapForDisplay && <span>| Course Length: <span className="text-gray-200">{formatCourseLength(courseLengthMeters)}</span></span>}
         {statusBarMessage && <span className="text-yellow-400">{statusBarMessage}</span>}
       </div>
+      <ShortcutModal isOpen={isShortcutModalOpen} onClose={() => setShortcutModalOpen(false)} />
     </div>
   );
 };
