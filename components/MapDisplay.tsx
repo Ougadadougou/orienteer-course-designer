@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import {
   Point,
   MapTransform,
@@ -172,7 +172,7 @@ export const drawCourseElementOnContext = (
 interface MapDisplayProps {
   mapMediaToRender: HTMLCanvasElement | HTMLImageElement | null;
   mapTransform: MapTransform;
-  courseElements: CourseElement[]; 
+  courseElements: CourseElement[];
   selectedElementId: string | null;
   onCanvasMouseDown: (mapPoint: Point, event: React.MouseEvent<HTMLCanvasElement>) => void;
   onCanvasMouseMove: (mapPoint: Point, event: React.MouseEvent<HTMLCanvasElement>) => void;
@@ -182,11 +182,13 @@ interface MapDisplayProps {
   currentTool: Tool;
   currentMouseMapPos: Point | null;
   isDragging: boolean;
-  isMeasuringRefLine: boolean; 
-  refLinePoints: Point[]; 
+  isMeasuringRefLine: boolean;
+  refLinePoints: Point[];
   startSymbolScaleUI: number;
   controlSymbolScaleUI: number;
   finishSymbolScaleUI: number;
+  onMapFileDrop: (file: File) => void | Promise<unknown>;
+  isMapProcessing: boolean;
 }
 
 export const MapDisplay: React.FC<MapDisplayProps> = ({
@@ -194,10 +196,13 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
   onCanvasMouseDown, onCanvasMouseMove, onCanvasMouseUp, onCanvasWheel,
   drawingPoints, currentTool, currentMouseMapPos, isDragging,
   isMeasuringRefLine, refLinePoints,
-  startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI 
+  startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI,
+  onMapFileDrop, isMapProcessing,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [isDragActive, setIsDragActive] = useState(false);
+  const dragCounterRef = useRef(0);
 
   const getMapCoords = useCallback((event: React.MouseEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current; if (!canvas) return { x: 0, y: 0 };
@@ -299,11 +304,58 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
 
     ctx.restore();
   }, [
-      mapMediaToRender, mapTransform, courseElements, selectedElementId, 
-      drawingPoints, currentTool, currentMouseMapPos, 
+      mapMediaToRender, mapTransform, courseElements, selectedElementId,
+      drawingPoints, currentTool, currentMouseMapPos,
       isMeasuringRefLine, refLinePoints,
-      startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI 
+      startSymbolScaleUI, controlSymbolScaleUI, finishSymbolScaleUI
     ]);
+
+  useEffect(() => {
+    if (mapMediaToRender || isMapProcessing) {
+      dragCounterRef.current = 0;
+      setIsDragActive(false);
+    }
+  }, [mapMediaToRender, isMapProcessing]);
+
+  const handleDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (mapMediaToRender || isMapProcessing) return;
+    dragCounterRef.current += 1;
+    setIsDragActive(true);
+  }, [mapMediaToRender, isMapProcessing]);
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (mapMediaToRender || isMapProcessing) {
+      event.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    event.dataTransfer.dropEffect = 'copy';
+  }, [mapMediaToRender, isMapProcessing]);
+
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (mapMediaToRender || isMapProcessing) return;
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) {
+      setIsDragActive(false);
+    }
+  }, [mapMediaToRender, isMapProcessing]);
+
+  const handleDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    dragCounterRef.current = 0;
+    setIsDragActive(false);
+
+    if (mapMediaToRender || isMapProcessing) {
+      return;
+    }
+
+    const files = event.dataTransfer?.files;
+    if (files && files.length > 0) {
+      onMapFileDrop(files[0]);
+    }
+  }, [mapMediaToRender, isMapProcessing, onMapFileDrop]);
 
   return (
     <div ref={containerRef} className="canvas-container flex-grow bg-gray-700 relative">
@@ -317,8 +369,20 @@ export const MapDisplay: React.FC<MapDisplayProps> = ({
         style={{ cursor: isMeasuringRefLine ? 'crosshair' : (currentTool === Tool.PAN ? (isDragging ? 'grabbing' : 'grab') : (currentTool === Tool.SELECT ? 'default' : 'crosshair')) }}
       />
       {!mapMediaToRender && (
-        <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-xl pointer-events-none">
-          Upload a map to begin.
+        <div
+          className={`absolute inset-0 flex flex-col items-center justify-center border-2 border-dashed rounded-lg transition-colors duration-150 px-6 text-center ${
+            isDragActive ? 'border-blue-400 bg-blue-500/10 text-blue-100' : 'border-gray-500 text-gray-300'
+          } ${isMapProcessing ? 'opacity-60 cursor-progress' : 'cursor-copy'}`}
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <p className="text-xl font-medium">Drop a map file here</p>
+          <p className="text-sm mt-2 opacity-80">
+            {isMapProcessing ? 'Map is processing. Please wait…' : 'Supported formats: PDF, PNG, JPG, HEIC, GIF, WebP, BMP, TIFF.'}
+          </p>
+          <p className="text-sm mt-1 opacity-80">or use the upload button above.</p>
         </div>
       )}
     </div>
