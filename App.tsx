@@ -11,6 +11,7 @@ import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay'
 import { ControlDescriptionPanel } from './components/ControlDescriptionPanel';
 import { ScaleSettings } from './components/ScaleSettings';
 import { SymbolSettings } from './components/SymbolSettings';
+import { useDialog } from './components/dialog/DialogProvider';
 import {
   DEFAULT_MAP_SCALE, DEFAULT_MAP_OFFSET, 
   MIN_ZOOM, MAX_ZOOM, ZOOM_SENSITIVITY,
@@ -112,6 +113,89 @@ const App: React.FC = () => {
   const [controlSymbolScaleUI, setControlSymbolScaleUI] = useState<number>(5);
   const [finishSymbolScaleUI, setFinishSymbolScaleUI] = useState<number>(5);
 
+  const { confirm: confirmDialog } = useDialog();
+
+  const hasAutosaveSnapshot = useCallback((): boolean => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+      return false;
+    }
+
+    const candidateKeys = [
+      'orienteer-course-designer.autosave',
+      'orienteer-course-designer.autosaveMetadata',
+      'orienteer-course-designer.autosaveTimestamp',
+    ];
+
+    try {
+      for (const key of candidateKeys) {
+        const rawValue = window.localStorage.getItem(key);
+        if (!rawValue) {
+          continue;
+        }
+
+        if (rawValue.trim() === '') {
+          continue;
+        }
+
+        const numericValue = Number(rawValue);
+        if (!Number.isNaN(numericValue) && numericValue > 0) {
+          return true;
+        }
+
+        try {
+          const parsed = JSON.parse(rawValue);
+          if (parsed && typeof parsed === 'object') {
+            if (typeof (parsed as { timestamp?: unknown }).timestamp === 'number') {
+              return true;
+            }
+            if (typeof (parsed as { lastSaved?: unknown }).lastSaved === 'number') {
+              return true;
+            }
+          }
+        } catch {
+          // Non-JSON values still indicate stored autosave data.
+          return true;
+        }
+      }
+    } catch (error) {
+      console.warn('Unable to inspect autosave metadata', error);
+    }
+
+    return false;
+  }, []);
+
+  const hasUnsavedWork = useCallback(() => {
+    const hasCourseElements = courseState.elements.length > 0;
+    const hasMapAssociation = !!courseState.mapFileName;
+    const hasDraftGeometry = drawingAreaPoints.length > 0 || !!legStartElementId || refLinePoints.length > 0;
+    const isMeasuring = isMeasuringRefLine;
+    const hasScaleSettings = mapScaleSettings.mode !== 'none' || !!mapScaleSettings.mapUnitsOnScreen || !!mapScaleSettings.realWorldMeters;
+    const hasCalculatedLength = courseLengthMeters !== null;
+    const autosaveExists = hasAutosaveSnapshot();
+
+    return (
+      hasCourseElements ||
+      hasMapAssociation ||
+      hasDraftGeometry ||
+      isMeasuring ||
+      hasScaleSettings ||
+      hasCalculatedLength ||
+      autosaveExists
+    );
+  }, [
+    courseState.elements.length,
+    courseState.mapFileName,
+    drawingAreaPoints.length,
+    legStartElementId,
+    refLinePoints.length,
+    isMeasuringRefLine,
+    mapScaleSettings.mode,
+    mapScaleSettings.mapUnitsOnScreen,
+    mapScaleSettings.realWorldMeters,
+    courseLengthMeters,
+    hasAutosaveSnapshot,
+  ]);
+
   const handleSetStartSymbolScaleUI = (scale: number) => {
     if (scale >= 1 && scale <= 10) setStartSymbolScaleUI(scale);
   };
@@ -195,13 +279,29 @@ const App: React.FC = () => {
     const allowedTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/heic', 'image/gif', 'image/webp', 'image/bmp', 'image/tiff'];
     const lowerCaseFileName = fileName.toLowerCase();
     const knownExtensions = ['.pdf', '.png', '.jpg', '.jpeg', '.heic', '.gif', '.webp', '.bmp', '.tif', '.tiff'];
-    let isAllowed = allowedTypes.includes(fileType) || knownExtensions.some(ext => lowerCaseFileName.endsWith(ext));
-    
-    if (!isAllowed) { 
-        alert("Unsupported file type. Please upload a PDF, PNG, JPG/JPEG, HEIC, GIF, WebP, BMP or TIFF file.");
-        event.target.value = ''; 
-        return;
+    const isAllowed = allowedTypes.includes(fileType) || knownExtensions.some(ext => lowerCaseFileName.endsWith(ext));
+
+    if (!isAllowed) {
+      alert("Unsupported file type. Please upload a PDF, PNG, JPG/JPEG, HEIC, GIF, WebP, BMP or TIFF file.");
+      event.target.value = '';
+      return;
     }
+
+    if (hasUnsavedWork()) {
+      const shouldReset = await confirmDialog({
+        title: 'Discard current work?',
+        description: 'Uploading a new map will reset the current course design, including unsaved changes and autosaved progress. Continue?',
+        confirmLabel: 'Discard and Upload',
+        cancelLabel: 'Keep Working',
+        tone: 'danger',
+      });
+
+      if (!shouldReset) {
+        event.target.value = '';
+        return;
+      }
+    }
+
     if (mapSourceData && typeof mapSourceData !== 'string' && 'cleanup' in mapSourceData) {
         (mapSourceData as PDFPageProxy).cleanup();
     }
