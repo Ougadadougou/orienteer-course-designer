@@ -34,6 +34,167 @@ const initialAppState: AppState = {
   selectedElementId: null,
 };
 
+const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
+
+const sanitizePoint = (value: any): Point | null => {
+  if (!value || typeof value !== 'object') return null;
+  const x = typeof value.x === 'number' ? value.x : Number(value.x);
+  const y = typeof value.y === 'number' ? value.y : Number(value.y);
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    return { x, y };
+  }
+  return null;
+};
+
+const sanitizeControlDescription = (description: any, controlNumber: number): ControlDescriptionData => {
+  const defaultDescription = getDefaultControlDescription(controlNumber);
+  if (!description || typeof description !== 'object') {
+    return defaultDescription;
+  }
+
+  const sanitizedDescription: ControlDescriptionData = { ...defaultDescription };
+  (Object.keys(defaultDescription) as (keyof ControlDescriptionData)[]).forEach(key => {
+    const value = description[key];
+    sanitizedDescription[key] = typeof value === 'string' ? value : defaultDescription[key];
+  });
+  return sanitizedDescription;
+};
+
+const sanitizeLoadedCourseElements = (rawElements: unknown[]): CourseElement[] => {
+  if (!Array.isArray(rawElements)) return [];
+
+  const discarded: { reason: string; element: unknown }[] = [];
+  const nonLegEntries: Array<{ index: number; element: CourseElement }> = [];
+  const legCandidates: Array<{ index: number; element: LegElement; raw: unknown }> = [];
+
+  const toIdString = (value: any): string | null => {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'bigint') {
+      return String(value);
+    }
+    return null;
+  };
+
+  rawElements.forEach((rawElement, index) => {
+    if (!rawElement || typeof rawElement !== 'object') {
+      discarded.push({ reason: 'Element is not an object', element: rawElement });
+      return;
+    }
+
+    const raw: any = rawElement;
+    const id = toIdString(raw.id);
+    if (!id) {
+      discarded.push({ reason: 'Missing valid id', element: raw });
+      return;
+    }
+
+    switch (raw.type) {
+      case ElementType.START: {
+        const center = sanitizePoint(raw.center);
+        if (!center) {
+          discarded.push({ reason: 'Start element missing valid center', element: raw });
+          return;
+        }
+        const rotationAngle = isFiniteNumber(raw.rotationAngle) ? raw.rotationAngle : 0;
+        const startElement: StartElement = { id, type: ElementType.START, center, rotationAngle };
+        nonLegEntries.push({ index, element: startElement });
+        break;
+      }
+      case ElementType.CONTROL: {
+        const center = sanitizePoint(raw.center);
+        if (!center) {
+          discarded.push({ reason: 'Control element missing valid center', element: raw });
+          return;
+        }
+        const controlNumber = isFiniteNumber(raw.number) ? raw.number : Number.parseInt(String(raw.number), 10);
+        if (!Number.isFinite(controlNumber)) {
+          discarded.push({ reason: 'Control element missing valid number', element: raw });
+          return;
+        }
+        const sanitizedDescription = sanitizeControlDescription(raw.description, controlNumber);
+        const controlElement: ControlElement = {
+          id,
+          type: ElementType.CONTROL,
+          center,
+          number: controlNumber,
+          description: sanitizedDescription,
+        };
+        nonLegEntries.push({ index, element: controlElement });
+        break;
+      }
+      case ElementType.FINISH: {
+        const center = sanitizePoint(raw.center);
+        if (!center) {
+          discarded.push({ reason: 'Finish element missing valid center', element: raw });
+          return;
+        }
+        const finishElement: FinishElement = { id, type: ElementType.FINISH, center };
+        nonLegEntries.push({ index, element: finishElement });
+        break;
+      }
+      case ElementType.AREA: {
+        const pointsSource = Array.isArray(raw.points) ? raw.points : [];
+        const points = pointsSource
+          .map((pt: any) => sanitizePoint(pt))
+          .filter((pt): pt is Point => !!pt);
+        if (points.length < 3) {
+          discarded.push({ reason: 'Area element missing sufficient valid points', element: raw });
+          return;
+        }
+        const kind = Object.values(AreaKind).includes(raw.kind) ? raw.kind : AreaKind.FORBIDDEN;
+        const areaElement: AreaElement = { id, type: ElementType.AREA, points, kind };
+        nonLegEntries.push({ index, element: areaElement });
+        break;
+      }
+      case ElementType.LEG: {
+        const fromElementId = toIdString(raw.fromElementId);
+        const toElementId = toIdString(raw.toElementId);
+        if (!fromElementId || !toElementId) {
+          discarded.push({ reason: 'Leg element missing endpoint reference', element: raw });
+          return;
+        }
+        const style: LegElement['style'] = raw.style === 'dashed' || raw.style === 'uncrossable' ? raw.style : 'solid';
+        const legElement: LegElement = {
+          id,
+          type: ElementType.LEG,
+          fromElementId,
+          toElementId,
+          style,
+        };
+        legCandidates.push({ index, element: legElement, raw });
+        break;
+      }
+      default:
+        discarded.push({ reason: 'Unrecognized element type', element: raw });
+    }
+  });
+
+  const validElementIds = new Set(nonLegEntries.map(entry => entry.element.id));
+  const validLegEntries: Array<{ index: number; element: CourseElement }> = [];
+
+  legCandidates.forEach(candidate => {
+    const { element, raw } = candidate;
+    if (!validElementIds.has(element.fromElementId) || !validElementIds.has(element.toElementId)) {
+      discarded.push({ reason: 'Leg element references missing endpoints', element: raw });
+      return;
+    }
+    if (element.fromElementId === element.toElementId) {
+      discarded.push({ reason: 'Leg element has identical endpoints', element: raw });
+      return;
+    }
+    validLegEntries.push({ index: candidate.index, element });
+  });
+
+  if (discarded.length > 0) {
+    discarded.forEach(({ reason, element }) => {
+      console.warn('[sanitizeLoadedCourseElements] Discarded element:', reason, element);
+    });
+  }
+
+  const combinedEntries = [...nonLegEntries, ...validLegEntries].sort((a, b) => a.index - b.index);
+  return combinedEntries.map(entry => entry.element);
+};
+
 // This function needs to calculate current size based on scale to determine target center
 const getRotationAngleForStart = (startElement: StartElement, allElements: CourseElement[], startSymbolScaleUI: number): number => {
   const connectedLegs = allElements.filter(el => 
@@ -566,23 +727,7 @@ const App: React.FC = () => {
         try {
           const loadedData = JSON.parse(e.target?.result as string) as CourseData; // Assuming CourseData might store scales
           if (loadedData && Array.isArray(loadedData.elements)) {
-            const sanitizedElements = loadedData.elements.map(el => {
-              // Remove size/radius properties from loaded elements as they are no longer stored
-              const { size, radius, outerRadius, innerRadius, ...restOfElement } = el as any;
-              let sanitizedEl = restOfElement;
-
-              if (sanitizedEl.type === ElementType.CONTROL) {
-                if (!(sanitizedEl as ControlElement).description) {
-                  (sanitizedEl as ControlElement).description = getDefaultControlDescription((sanitizedEl as ControlElement).number);
-                }
-              }
-              if (sanitizedEl.type === ElementType.START) {
-                if (typeof (sanitizedEl as StartElement).rotationAngle === 'undefined') {
-                  (sanitizedEl as StartElement).rotationAngle = 0; 
-                }
-              }
-              return sanitizedEl as CourseElement;
-            });
+            const sanitizedElements = sanitizeLoadedCourseElements(loadedData.elements);
 
             // After sanitizing individual elements, recalculate Start rotations based on all loaded elements and current startSymbolScaleUI
             let finalLoadedElements = sanitizedElements.map(el => (el.type === ElementType.START) ? { ...el, rotationAngle: getRotationAngleForStart(el as StartElement, sanitizedElements, startSymbolScaleUI) } : el);
