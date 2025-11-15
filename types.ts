@@ -87,6 +87,7 @@ export interface AreaElement extends CourseElementBase {
   type: ElementType.AREA;
   points: Point[];
   kind: AreaKind;
+  corridorWidth?: number; // Optional width for corridor-type areas, in meters or map units
 }
 
 export type CourseElement = StartElement | ControlElement | FinishElement | LegElement | AreaElement;

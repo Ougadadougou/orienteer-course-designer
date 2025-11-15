@@ -9,6 +9,7 @@ import { useHistory } from './hooks/useHistory';
 import { Toolbar } from './components/Toolbar';
 import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay'; 
 import { ControlDescriptionPanel } from './components/ControlDescriptionPanel';
+import { ElementInspector } from './components/ElementInspector';
 import { ScaleSettings } from './components/ScaleSettings';
 import { SymbolSettings } from './components/SymbolSettings';
 import {
@@ -534,6 +535,42 @@ const App: React.FC = () => {
   const handleUpdateDescription = (controlId: string, newDescription: ControlDescriptionData) => setCourseState(prev => ({ ...prev, elements: prev.elements.map(el => (el.id === controlId && el.type === ElementType.CONTROL) ? { ...el, description: newDescription } : el) }));
   // handleUpdateControlRadius is removed
 
+  const handleUpdateStartRotation = (startId: string, rotationDegrees: number) => {
+    const normalizedDegrees = ((rotationDegrees % 360) + 360) % 360;
+    const radians = (normalizedDegrees * Math.PI) / 180;
+    setCourseState(prev => ({
+      ...prev,
+      elements: prev.elements.map(el => (el.id === startId && el.type === ElementType.START)
+        ? { ...el, rotationAngle: radians }
+        : el),
+    }));
+  };
+
+  const handleUpdateLegStyle = (legId: string, style: LegElement['style']) => {
+    setCourseState(prev => ({
+      ...prev,
+      elements: prev.elements.map(el => (el.id === legId && el.type === ElementType.LEG)
+        ? { ...el, style }
+        : el),
+    }));
+  };
+
+  const handleUpdateCorridorWidth = (areaId: string, width: number | null) => {
+    setCourseState(prev => ({
+      ...prev,
+      elements: prev.elements.map(el => {
+        if (el.id === areaId && el.type === ElementType.AREA && el.kind === AreaKind.CORRIDOR) {
+          const corridorElement = el as AreaElement;
+          return {
+            ...corridorElement,
+            corridorWidth: width === null ? undefined : width,
+          };
+        }
+        return el;
+      }),
+    }));
+  };
+
   const handleExportDescriptions = () => {
     const controls = courseState.elements.filter(el => el.type === ElementType.CONTROL) as ControlElement[];
     controls.sort((a,b) => a.number - b.number);
@@ -697,6 +734,13 @@ const App: React.FC = () => {
     return lengthInMeters >= 1000 ? `${(lengthInMeters / 1000).toFixed(2)} km` : `${lengthInMeters.toFixed(0)} m`;
   };
 
+  const selectedElement = courseState.selectedElementId
+    ? courseState.elements.find(el => el.id === courseState.selectedElementId) || null
+    : null;
+  const selectedControl = selectedElement?.type === ElementType.CONTROL
+    ? selectedElement as ControlElement
+    : null;
+
   let statusBarMessage = "";
   if (isMeasuringRefLine) {
     statusBarMessage = refLinePoints.length === 0 ? "Measuring: Click start point of reference line." : "Measuring: Click end point of reference line.";
@@ -772,8 +816,14 @@ const App: React.FC = () => {
           controlSymbolScaleUI={controlSymbolScaleUI}
           finishSymbolScaleUI={finishSymbolScaleUI}
         />
+        <ElementInspector
+          selectedElement={selectedElement}
+          onUpdateStartRotation={handleUpdateStartRotation}
+          onUpdateLegStyle={handleUpdateLegStyle}
+          onUpdateCorridorWidth={handleUpdateCorridorWidth}
+        />
         <ControlDescriptionPanel
-          selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
+          selectedControl={selectedControl}
           allCourseElements={courseState.elements}
           onUpdateDescription={handleUpdateDescription}
           onExportDescriptions={handleExportDescriptions}
