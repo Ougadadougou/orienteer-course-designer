@@ -76,6 +76,9 @@ const getRotationAngleForStart = (startElement: StartElement, allElements: Cours
   return 0; 
 };
 
+const AUTOSAVE_STORAGE_KEY = 'orienteer-course-designer-autosave';
+const AUTOSAVE_DEBOUNCE_MS = 500;
+
 const App: React.FC = () => {
   const [mapSourceType, setMapSourceType] = useState<'pdf' | 'image' | null>(null);
   const [mapSourceData, setMapSourceData] = useState<PDFPageProxy | string | null>(null); 
@@ -106,6 +109,8 @@ const App: React.FC = () => {
   const [refLinePoints, setRefLinePoints] = useState<Point[]>([]);
 
   const mapDisplayWrapperRef = useRef<HTMLDivElement>(null);
+  const autosaveSkipNextRef = useRef(false);
+  const autosaveTimeoutRef = useRef<number | null>(null);
 
   // Global Symbol Scale UI states (1-10, default 5)
   const [startSymbolScaleUI, setStartSymbolScaleUI] = useState<number>(5);
@@ -711,6 +716,46 @@ const App: React.FC = () => {
   }, [currentTool, drawingAreaPoints, setCourseState, courseState.selectedElementId, handleDeleteSelected, undo, redo, isMeasuringRefLine, startSymbolScaleUI]); // Added startSymbolScaleUI for rotation recalc dependency
 
   const handleScaleSettingsUpdate = (newSettings: MapScaleSettings) => setMapScaleSettings(newSettings);
+
+  const { elements: courseElements, mapFileName: courseMapFileName } = courseState;
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return;
+    }
+
+    if (autosaveSkipNextRef.current) {
+      autosaveSkipNextRef.current = false;
+      return;
+    }
+
+    if (autosaveTimeoutRef.current !== null) {
+      window.clearTimeout(autosaveTimeoutRef.current);
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      try {
+        const courseDataToSave: CourseData = {
+          elements: courseElements,
+          mapFileName: courseMapFileName,
+        };
+        window.localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(courseDataToSave));
+      } catch (error) {
+        console.error('Failed to autosave course data:', error);
+      } finally {
+        autosaveTimeoutRef.current = null;
+      }
+    }, AUTOSAVE_DEBOUNCE_MS);
+
+    autosaveTimeoutRef.current = timeoutId;
+
+    return () => {
+      if (autosaveTimeoutRef.current !== null) {
+        window.clearTimeout(autosaveTimeoutRef.current);
+        autosaveTimeoutRef.current = null;
+      }
+    };
+  }, [courseElements, courseMapFileName]);
 
   useEffect(() => {
     if (mapScaleSettings.mode === 'none' || !mapNaturalDimensions || courseState.elements.length === 0) { setCourseLengthMeters(null); return; }
