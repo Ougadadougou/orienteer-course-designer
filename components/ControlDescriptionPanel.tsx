@@ -7,6 +7,8 @@ interface ControlDescriptionPanelProps {
   allCourseElements: CourseElement[];
   onUpdateDescription: (controlId: string, newDescription: ControlDescriptionData) => void;
   onExportDescriptions: () => void;
+  className?: string;
+  style?: React.CSSProperties;
   // onUpdateControlRadius prop removed
 }
 
@@ -26,6 +28,8 @@ export const ControlDescriptionPanel: React.FC<ControlDescriptionPanelProps> = (
   allCourseElements,
   onUpdateDescription,
   onExportDescriptions,
+  className,
+  style,
   // onUpdateControlRadius prop removed
 }) => {
   const [editingDescription, setEditingDescription] = useState<ControlDescriptionData | null>(null);
@@ -52,7 +56,10 @@ export const ControlDescriptionPanel: React.FC<ControlDescriptionPanelProps> = (
 
 
   return (
-    <div className="w-96 bg-gray-800 p-4 shadow-lg overflow-y-auto flex flex-col border-l border-gray-700">
+    <div
+      className={`bg-gray-800 p-4 shadow-lg overflow-y-auto flex flex-col border-l border-gray-700 ${className ?? ''}`}
+      style={style}
+    >
       <h2 className="text-xl font-semibold mb-4 text-teal-400">Control Descriptions</h2>
       
       {selectedControl && editingDescription && (

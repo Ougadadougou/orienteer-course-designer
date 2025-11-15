@@ -76,6 +76,8 @@ const getRotationAngleForStart = (startElement: StartElement, allElements: Cours
   return 0; 
 };
 
+const DEFAULT_CONTROL_PANEL_WIDTH = 384;
+
 const App: React.FC = () => {
   const [mapSourceType, setMapSourceType] = useState<'pdf' | 'image' | null>(null);
   const [mapSourceData, setMapSourceData] = useState<PDFPageProxy | string | null>(null); 
@@ -106,11 +108,15 @@ const App: React.FC = () => {
   const [refLinePoints, setRefLinePoints] = useState<Point[]>([]);
 
   const mapDisplayWrapperRef = useRef<HTMLDivElement>(null);
+  const controlPanelResizeInfoRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   // Global Symbol Scale UI states (1-10, default 5)
   const [startSymbolScaleUI, setStartSymbolScaleUI] = useState<number>(5);
   const [controlSymbolScaleUI, setControlSymbolScaleUI] = useState<number>(5);
   const [finishSymbolScaleUI, setFinishSymbolScaleUI] = useState<number>(5);
+
+  const [isControlPanelOpen, setIsControlPanelOpen] = useState(true);
+  const [controlPanelWidth, setControlPanelWidth] = useState<number | null>(null);
 
   const handleSetStartSymbolScaleUI = (scale: number) => {
     if (scale >= 1 && scale <= 10) setStartSymbolScaleUI(scale);
@@ -121,6 +127,44 @@ const App: React.FC = () => {
   const handleSetFinishSymbolScaleUI = (scale: number) => {
     if (scale >= 1 && scale <= 10) setFinishSymbolScaleUI(scale);
   };
+
+  const handleControlPanelResizeMouseMove = useCallback((event: MouseEvent) => {
+    if (!controlPanelResizeInfoRef.current) {
+      return;
+    }
+
+    const delta = controlPanelResizeInfoRef.current.startX - event.clientX;
+    const newWidth = Math.max(240, Math.min(640, controlPanelResizeInfoRef.current.startWidth + delta));
+    setControlPanelWidth(newWidth);
+  }, []);
+
+  const handleControlPanelResizeMouseUp = useCallback(() => {
+    controlPanelResizeInfoRef.current = null;
+    document.removeEventListener('mousemove', handleControlPanelResizeMouseMove);
+    document.removeEventListener('mouseup', handleControlPanelResizeMouseUp);
+  }, [handleControlPanelResizeMouseMove]);
+
+  const handleControlPanelResizeMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startWidth = controlPanelWidth ?? DEFAULT_CONTROL_PANEL_WIDTH;
+    controlPanelResizeInfoRef.current = { startX: event.clientX, startWidth };
+    document.addEventListener('mousemove', handleControlPanelResizeMouseMove);
+    document.addEventListener('mouseup', handleControlPanelResizeMouseUp);
+  }, [controlPanelWidth, handleControlPanelResizeMouseMove, handleControlPanelResizeMouseUp]);
+
+  useEffect(() => {
+    return () => {
+      document.removeEventListener('mousemove', handleControlPanelResizeMouseMove);
+      document.removeEventListener('mouseup', handleControlPanelResizeMouseUp);
+    };
+  }, [handleControlPanelResizeMouseMove, handleControlPanelResizeMouseUp]);
+
+  const handleToggleControlPanel = useCallback(() => {
+    if (isControlPanelOpen) {
+      handleControlPanelResizeMouseUp();
+    }
+    setIsControlPanelOpen(prev => !prev);
+  }, [handleControlPanelResizeMouseUp, isControlPanelOpen]);
 
   const resetCourse = useCallback(() => {
     resetHistory(initialAppState);
@@ -752,33 +796,63 @@ const App: React.FC = () => {
         onExportPdf={handleExportPdf} isMapLoaded={!!processedMapForDisplay}
       />
 
-      <div ref={mapDisplayWrapperRef} className="flex flex-1 overflow-hidden print:overflow-visible">
-        <MapDisplay
-          mapMediaToRender={processedMapForDisplay}
-          mapTransform={mapTransform}
-          courseElements={courseState.elements}
-          selectedElementId={courseState.selectedElementId}
-          onCanvasMouseDown={handleCanvasMouseDown}
-          onCanvasMouseMove={handleCanvasMouseMove}
-          onCanvasMouseUp={handleCanvasMouseUp}
-          onCanvasWheel={handleCanvasWheel}
-          drawingPoints={drawingAreaPoints}
-          currentTool={currentTool}
-          currentMouseMapPos={currentMapMouseForPreview} 
-          isDragging={isDragging}
-          isMeasuringRefLine={isMeasuringRefLine} 
-          refLinePoints={refLinePoints} 
-          startSymbolScaleUI={startSymbolScaleUI} // Pass UI scales
-          controlSymbolScaleUI={controlSymbolScaleUI}
-          finishSymbolScaleUI={finishSymbolScaleUI}
-        />
-        <ControlDescriptionPanel
-          selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
-          allCourseElements={courseState.elements}
-          onUpdateDescription={handleUpdateDescription}
-          onExportDescriptions={handleExportDescriptions}
-          // onUpdateControlRadius removed
-        />
+      <div ref={mapDisplayWrapperRef} className="flex flex-1 overflow-hidden print:overflow-visible relative">
+        <div className="flex-1 relative">
+          <MapDisplay
+            mapMediaToRender={processedMapForDisplay}
+            mapTransform={mapTransform}
+            courseElements={courseState.elements}
+            selectedElementId={courseState.selectedElementId}
+            onCanvasMouseDown={handleCanvasMouseDown}
+            onCanvasMouseMove={handleCanvasMouseMove}
+            onCanvasMouseUp={handleCanvasMouseUp}
+            onCanvasWheel={handleCanvasWheel}
+            drawingPoints={drawingAreaPoints}
+            currentTool={currentTool}
+            currentMouseMapPos={currentMapMouseForPreview}
+            isDragging={isDragging}
+            isMeasuringRefLine={isMeasuringRefLine}
+            refLinePoints={refLinePoints}
+            startSymbolScaleUI={startSymbolScaleUI} // Pass UI scales
+            controlSymbolScaleUI={controlSymbolScaleUI}
+            finishSymbolScaleUI={finishSymbolScaleUI}
+          />
+          {!isControlPanelOpen && (
+            <button
+              type="button"
+              onClick={handleToggleControlPanel}
+              className="print:hidden absolute top-1/2 right-2 -translate-y-1/2 bg-gray-800 text-teal-300 px-2 py-1 rounded-l shadow-lg border border-gray-700 hover:bg-gray-700"
+              aria-label="Open control description panel"
+            >
+              ◀
+            </button>
+          )}
+        </div>
+        {isControlPanelOpen && (
+          <div className="relative h-full flex-shrink-0">
+            <div
+              className="absolute top-0 left-0 h-full w-1 cursor-col-resize bg-gray-900/40 hover:bg-teal-500/70 transition-colors print:hidden"
+              onMouseDown={handleControlPanelResizeMouseDown}
+            />
+            <button
+              type="button"
+              onClick={handleToggleControlPanel}
+              className="print:hidden absolute top-2 right-2 text-gray-400 hover:text-teal-300"
+              aria-label="Close control description panel"
+            >
+              ✕
+            </button>
+            <ControlDescriptionPanel
+              selectedControl={courseState.elements.find(el => el.id === courseState.selectedElementId && el.type === ElementType.CONTROL) as ControlElement | null}
+              allCourseElements={courseState.elements}
+              onUpdateDescription={handleUpdateDescription}
+              onExportDescriptions={handleExportDescriptions}
+              className="h-full pl-3"
+              style={{ width: controlPanelWidth ?? DEFAULT_CONTROL_PANEL_WIDTH }}
+              // onUpdateControlRadius removed
+            />
+          </div>
+        )}
       </div>
       <div className="p-1 bg-black text-xs text-center text-gray-400 print:hidden flex flex-wrap justify-center items-center gap-x-2">
         <span>Tool: <span className="text-teal-300">{currentTool}</span></span>
