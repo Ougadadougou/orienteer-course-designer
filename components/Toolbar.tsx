@@ -13,6 +13,7 @@ import { RedoIcon } from './icons/RedoIcon';
 import { SaveIcon } from './icons/SaveIcon';
 import { LoadIcon } from './icons/LoadIcon';
 import { DeleteIcon } from './icons/DeleteIcon';
+import { ResetIcon } from './icons/ResetIcon';
 
 interface ToolButtonProps {
   label: string;
@@ -52,15 +53,18 @@ interface ToolbarProps {
   isElementSelected: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
-  onExportPdf: () => void; 
+  onExportPdf: () => void;
   isMapLoaded: boolean;
+  onResetCourse: () => void;
+  hasCourseData: boolean;
   // elementDisplayScaleFactor and onSetElementDisplayScaleFactor are removed
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
-  currentTool, onSetTool, onUndo, canUndo, onRedo, canRedo, 
-  onSaveCourseData, onLoad, onDeleteSelected, isElementSelected, 
-  onZoomIn, onZoomOut, onExportPdf, isMapLoaded
+  currentTool, onSetTool, onUndo, canUndo, onRedo, canRedo,
+  onSaveCourseData, onLoad, onDeleteSelected, isElementSelected,
+  onZoomIn, onZoomOut, onExportPdf, isMapLoaded,
+  onResetCourse, hasCourseData,
 }) => {
   const loadInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -106,6 +110,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
       />
       <input type="file" ref={loadInputRef} accept=".json" onChange={onLoad} className="hidden" />
       <ToolButton label="Export Map as PDF" icon={<SaveIcon className="text-red-400" />} onClick={onExportPdf} disabled={!isMapLoaded} />
+      <ToolButton label="Reset Course" icon={<ResetIcon className="text-yellow-300" />} onClick={onResetCourse} disabled={!hasCourseData} />
        <div className="mx-2 h-8 border-l border-gray-600"></div>
        <ToolButton label="Delete Selected" icon={<DeleteIcon />} onClick={onDeleteSelected} disabled={!isElementSelected} />
     </div>

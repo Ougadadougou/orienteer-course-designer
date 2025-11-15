@@ -52,7 +52,7 @@ export const ControlDescriptionPanel: React.FC<ControlDescriptionPanelProps> = (
 
 
   return (
-    <div className="w-96 bg-gray-800 p-4 shadow-lg overflow-y-auto flex flex-col border-l border-gray-700">
+    <div className="bg-gray-800 p-4 shadow-lg overflow-y-auto flex flex-col flex-1">
       <h2 className="text-xl font-semibold mb-4 text-teal-400">Control Descriptions</h2>
       
       {selectedControl && editingDescription && (
