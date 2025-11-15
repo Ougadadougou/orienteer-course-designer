@@ -7,7 +7,7 @@ import {
 } from './types';
 import { useHistory } from './hooks/useHistory';
 import { Toolbar } from './components/Toolbar';
-import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay'; 
+import { MapDisplay, drawCourseElementOnContext } from './components/MapDisplay';
 import { ControlDescriptionPanel } from './components/ControlDescriptionPanel';
 import { ScaleSettings } from './components/ScaleSettings';
 import { SymbolSettings } from './components/SymbolSettings';
@@ -215,29 +215,36 @@ const App: React.FC = () => {
   }, [processedMapForDisplay, mapNaturalDimensions, fitMapToView]);
 
 
-  const handleMapUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const loadMapFromFile = useCallback(async (file: File): Promise<boolean> => {
+    if (isMapProcessing) return false;
+
     const fileName = file.name;
     const fileType = file.type;
     const allowedTypes = ['application/pdf', 'image/png', 'image/jpeg', 'image/heic', 'image/gif', 'image/webp', 'image/bmp', 'image/tiff'];
     const lowerCaseFileName = fileName.toLowerCase();
     const knownExtensions = ['.pdf', '.png', '.jpg', '.jpeg', '.heic', '.gif', '.webp', '.bmp', '.tif', '.tiff'];
-    let isAllowed = allowedTypes.includes(fileType) || knownExtensions.some(ext => lowerCaseFileName.endsWith(ext));
-    
-    if (!isAllowed) { 
+    const isAllowed = allowedTypes.includes(fileType) || knownExtensions.some(ext => lowerCaseFileName.endsWith(ext));
+
+    if (!isAllowed) {
         alert("Unsupported file type. Please upload a PDF, PNG, JPG/JPEG, HEIC, GIF, WebP, BMP or TIFF file.");
-        event.target.value = ''; 
-        return;
+        return false;
     }
+
     if (mapSourceData && typeof mapSourceData !== 'string' && 'cleanup' in mapSourceData) {
         (mapSourceData as PDFPageProxy).cleanup();
     }
-    setMapSourceType(null); setMapSourceData(null); setMapNaturalDimensions(null);
-    setProcessedMapForDisplay(null); setCourseLengthMeters(null); setIsMapProcessing(true);
+
+    setMapSourceType(null);
+    setMapSourceData(null);
+    setMapNaturalDimensions(null);
+    setProcessedMapForDisplay(null);
+    setCourseLengthMeters(null);
+    setIsMapProcessing(true);
     document.body.style.cursor = 'wait';
     // Set an initial default transform while processing. fitMapToView will override it.
     setMapTransform({ scale: DEFAULT_MAP_SCALE, offset: DEFAULT_MAP_OFFSET });
+
+    let success = false;
 
     try {
         if (fileType === 'application/pdf' || lowerCaseFileName.endsWith('.pdf')) {
@@ -248,57 +255,79 @@ const App: React.FC = () => {
               pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${version}/pdf.worker.min.mjs`;
             }
             const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-            const page = await pdf.getPage(1); 
+            const page = await pdf.getPage(1);
             const viewport = page.getViewport({scale:1});
-            setMapSourceType('pdf'); setMapSourceData(page);
+            setMapSourceType('pdf');
+            setMapSourceData(page);
             setMapNaturalDimensions({width: viewport.width, height: viewport.height});
             const tempRenderCanvas = document.createElement('canvas');
-            tempRenderCanvas.width = viewport.width; tempRenderCanvas.height = viewport.height;
+            tempRenderCanvas.width = viewport.width;
+            tempRenderCanvas.height = viewport.height;
             const tempCtx = tempRenderCanvas.getContext('2d');
             if (tempCtx) {
                 await page.render({ canvasContext: tempCtx, viewport }).promise;
                 setProcessedMapForDisplay(tempRenderCanvas);
-            } else throw new Error("Could not create rendering context for PDF.");
-        } else { 
-            let imageBlob: Blob = file; 
+            } else {
+                throw new Error("Could not create rendering context for PDF.");
+            }
+        } else {
+            let imageBlob: Blob = file;
             if (lowerCaseFileName.endsWith('.heic')) {
                 try {
                     const convertedBlob = await heic2any({ blob: file, toType: "image/jpeg", quality: 0.9 });
-                    imageBlob = convertedBlob instanceof Blob ? convertedBlob : file; 
+                    imageBlob = convertedBlob instanceof Blob ? convertedBlob : file;
                 } catch (heicError) {
                     console.error("HEIC conversion error:", heicError);
-                    alert(`Error converting HEIC file: ${heicError instanceof Error ? heicError.message : String(heicError)}`);
-                    setIsMapProcessing(false); document.body.style.cursor = 'default'; event.target.value = ''; return;
+                    throw new Error(`Error converting HEIC file: ${heicError instanceof Error ? heicError.message : String(heicError)}`);
                 }
             }
             const imageUrl = URL.createObjectURL(imageBlob);
             const img = new Image();
             await new Promise<void>((resolve, reject) => {
                 img.onload = () => {
-                    setMapSourceType('image'); setMapSourceData(imageUrl); 
+                    setMapSourceType('image');
+                    setMapSourceData(imageUrl);
                     setMapNaturalDimensions({width: img.naturalWidth, height: img.naturalHeight});
-                    setProcessedMapForDisplay(img); resolve();
+                    setProcessedMapForDisplay(img);
+                    resolve();
                 };
-                img.onerror = () => { URL.revokeObjectURL(imageUrl); reject(new Error("Error loading image file.")); };
+                img.onerror = () => {
+                    URL.revokeObjectURL(imageUrl);
+                    reject(new Error("Error loading image file."));
+                };
                 img.src = imageUrl;
             });
         }
-        // setMapTransform({ scale: DEFAULT_MAP_SCALE, offset: DEFAULT_MAP_OFFSET }); // Moved up
+
         const newMapFileName = fileName;
         setCourseState(prev => ({
-            ...initialAppState, 
-            elements: prev.mapFileName === newMapFileName ? prev.elements : [], 
-            mapFileName: newMapFileName 
-        }), false); 
-        resetCourse(); 
+            ...initialAppState,
+            elements: prev.mapFileName === newMapFileName ? prev.elements : [],
+            mapFileName: newMapFileName
+        }), false);
+        resetCourse();
+        success = true;
     } catch (error) {
         console.error("Error loading map:", error);
         alert(`Error loading map: ${error instanceof Error ? error.message : String(error)}`);
-        setProcessedMapForDisplay(null); 
+        setProcessedMapForDisplay(null);
     } finally {
-        setIsMapProcessing(false); document.body.style.cursor = 'default'; event.target.value = ''; 
+        setIsMapProcessing(false);
+        document.body.style.cursor = 'default';
     }
-  };
+
+    return success;
+  }, [isMapProcessing, mapSourceData, resetCourse, setCourseState]);
+
+  const handleMapUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+        await loadMapFromFile(file);
+    } finally {
+        event.target.value = '';
+    }
+  }, [loadMapFromFile]);
 
   const updateElementPosition = (elementId: string, newPos: Point | Point[]) => {
     setCourseState(prev => ({
@@ -797,11 +826,13 @@ const App: React.FC = () => {
           currentTool={currentTool}
           currentMouseMapPos={currentMapMouseForPreview} 
           isDragging={isDragging}
-          isMeasuringRefLine={isMeasuringRefLine} 
-          refLinePoints={refLinePoints} 
+          isMeasuringRefLine={isMeasuringRefLine}
+          refLinePoints={refLinePoints}
           startSymbolScaleUI={startSymbolScaleUI} // Pass UI scales
           controlSymbolScaleUI={controlSymbolScaleUI}
           finishSymbolScaleUI={finishSymbolScaleUI}
+          onMapFileDrop={loadMapFromFile}
+          isMapProcessing={isMapProcessing}
         />
         <ControlDescriptionPanel
           selectedControl={selectedElement?.type === ElementType.CONTROL ? (selectedElement as ControlElement) : null}
